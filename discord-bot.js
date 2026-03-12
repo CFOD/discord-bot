@@ -2074,7 +2074,7 @@ async function pollVolantaFlights(client) {
   try {
     if (!config.volantaUserId || !config.volantaChannelId) return;
     const res = await axios.get(
-      ,
+      `https://api.volanta.app/api/v1/Flights/user/${config.volantaUserId}?page=1&pageSize=1`,
       { headers: { Accept: 'application/json' }, timeout: 10000 }
     );
     const flights = res.data;
@@ -2094,19 +2094,19 @@ async function pollVolantaFlights(client) {
     const aircraftTitle = flight.aircraftTitle || aircraft;
     const airline = flight.aircraft?.airline?.name || '';
     const callsign = flight.callsign || flight.flightNumber || 'Unknown';
-    const distNm = flight.distanceFlownInNauticalMiles ?  : 'Unknown';
+    const distNm = flight.distanceFlownInNauticalMiles ? `${Math.round(flight.distanceFlownInNauticalMiles).toLocaleString()} nm` : 'Unknown';
     const flightTimeSec = flight.realFlightTime || flight.effectiveFlightTime || 0;
     const hrs = Math.floor(flightTimeSec / 3600);
     const mins = Math.floor((flightTimeSec % 3600) / 60);
-    const duration = flightTimeSec ?  : 'Unknown';
-    const landingRate = flight.landingRate ?  : 'Unknown';
-    const fuelBurn = flight.fuelBurn ?  : null;
+    const duration = flightTimeSec ? `${hrs}h ${mins}m` : 'Unknown';
+    const landingRate = flight.landingRate ? `${Math.round(flight.landingRate)} fpm` : 'Unknown';
+    const fuelBurn = flight.fuelBurn ? `${Math.round(flight.fuelBurn).toLocaleString()} kg` : null;
     const embed = new EmbedBuilder()
-      .setTitle()
-      .setDescription()
+      .setTitle(`✈️ ${config.volantaUsername} just landed!`)
+      .setDescription(`**${callsign}** — ${originName} (${origin}) → ${destName} (${dest})`)
       .addFields(
-        { name: '🛫 Route', value: , inline: true },
-        { name: '🛩️ Aircraft', value:  · , inline: true },
+        { name: '🛫 Route', value: `${origin} → ${dest}`, inline: true },
+        { name: '🛩️ Aircraft', value: `${aircraft}${airline ? ' · ' + airline : ''}`, inline: true },
         { name: '⏱️ Duration', value: duration, inline: true },
         { name: '📏 Distance', value: distNm, inline: true },
         { name: '🛬 Landing Rate', value: landingRate, inline: true },
@@ -2114,8 +2114,8 @@ async function pollVolantaFlights(client) {
       )
       .setColor(0x5865F2)
       .setTimestamp()
-      .setFooter({ text:  })
-      .setURL();
+      .setFooter({ text: `Volanta · ${aircraftTitle}` })
+      .setURL(`https://fly.volanta.app/profile/${config.volantaUsername}/flights`);
     await channel.send({ embeds: [embed] });
   } catch (e) { console.error('Volanta poll error:', e.message); }
 }
