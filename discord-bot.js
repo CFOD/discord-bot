@@ -2101,6 +2101,7 @@ async function pollVolantaFlights(client) {
     const duration = flightTimeSec ? `${hrs}h ${mins}m` : 'Unknown';
     const landingRate = flight.landingRate ? `${Math.round(flight.landingRate)} fpm` : 'Unknown';
     const fuelBurn = flight.fuelBurn ? `${Math.round(flight.fuelBurn).toLocaleString()} kg` : null;
+    const avgSpeed = (flight.distanceFlownInNauticalMiles && flightTimeSec) ? `${Math.round(flight.distanceFlownInNauticalMiles / (flightTimeSec / 3600))} kt` : null;
     const embed = new EmbedBuilder()
       .setTitle(`✈️ ${config.volantaUsername} just landed!`)
       .setDescription(`**${callsign}** — ${originName} (${origin}) → ${destName} (${dest})`)
@@ -2111,6 +2112,7 @@ async function pollVolantaFlights(client) {
         { name: '📏 Distance', value: distNm, inline: true },
         { name: '🛬 Landing Rate', value: landingRate, inline: true },
         ...(fuelBurn ? [{ name: '⛽ Fuel Burn', value: fuelBurn, inline: true }] : []),
+        ...(avgSpeed ? [{ name: '💨 Avg Speed', value: avgSpeed, inline: true }] : []),
       )
       .setColor(0x5865F2)
       .setTimestamp()
