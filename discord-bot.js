@@ -2069,13 +2069,21 @@ async function pollEmergencies(client) {
     const channel = client.channels.cache.get(config.emergencyChannelId);
     if (!channel) return;
 
+    // Update lastSeen for all active emergencies
+    for (const [icao24, data] of currentEmergencies) {
+      const existing = knownEmergencies.get(icao24);
+      if (existing && existing.squawk === data.squawk) {
+        knownEmergencies.set(icao24, { ...existing, lastSeen: Date.now() });
+      }
+    }
+
     // Post new emergencies
     for (const [icao24, data] of currentEmergencies) {
       const existing = knownEmergencies.get(icao24);
       const isNew = !existing;
       const squawkChanged = existing && existing.squawk !== data.squawk;
       if (isNew || squawkChanged) {
-        knownEmergencies.set(icao24, data);
+        knownEmergencies.set(icao24, { ...data, lastSeen: Date.now() });
         saveKnownEmergencies();
         const info = EMERGENCY_SQUAWKS[data.squawk];
         const posStr = data.lat && data.lon
@@ -2114,9 +2122,15 @@ async function pollEmergencies(client) {
       }
     }
 
-    // Clear resolved emergencies
-    for (const icao24 of knownEmergencies.keys()) {
-      if (!currentEmergencies.has(icao24)) { knownEmergencies.delete(icao24); saveKnownEmergencies(); }
+    // Clear resolved emergencies (15 min grace period to handle API dropouts)
+    const GRACE_MS = 15 * 60 * 1000;
+    for (const [icao24, entry] of knownEmergencies) {
+      if (!currentEmergencies.has(icao24)) {
+        if (Date.now() - (entry.lastSeen || 0) > GRACE_MS) {
+          knownEmergencies.delete(icao24);
+          saveKnownEmergencies();
+        }
+      }
     }
   } catch (error) {
     console.error('Emergency poll error:', error.message);
