@@ -26,6 +26,9 @@ const config = {
   emergencyChannelId: "1412039978057470042", // <-- Add channel ID to receive automatic emergency squawk alerts
   rageChannelId: "1412039978057470042", // <-- Channel to announce rage mode
   mapboxToken: process.env.MAPBOX_TOKEN,        // <-- Free token from https://mapbox.com (50,000 requests/month free)
+  volantaUserId: "c8dce899-5b6b-4534-3fb9-08dca7f6f6ee", // Celestial Volanta user ID
+  volantaUsername: "Celestial",
+  volantaChannelId: "1409584122208456856",
 };
 
 // ====== Aviation Constants ======
@@ -271,6 +274,7 @@ const PERSONALITY_PATH = path.join(__dirname, 'personality.json');
 const TRIVIA_SCORES_PATH = path.join(__dirname, 'trivia_scores.json');
 const MESSAGE_COUNTS_PATH = path.join(__dirname, 'message_counts.json');
 const ROULETTE_STREAKS_PATH = path.join(__dirname, 'roulette_streaks.json');
+const VOLANTA_LAST_FLIGHT_PATH = path.join(__dirname, 'volanta_last_flight.json');
 const KNOWN_EMERGENCIES_PATH = path.join(__dirname, 'known_emergencies.json');
 const DEFAULT_STORY_LENGTH = 15;
 
@@ -284,6 +288,7 @@ const rouletteCooldowns = new Map();
 const rouletteStreaks = new Map(); // userId -> { count, lastMutedAt }
 let rageModeActive = false;
 let emergencyFirstPoll = true;
+let lastVolantaFlightId = null;
 const MUTE_DURATIONS_MS = [1, 5, 10, 30, 60, 120, 240].map(m => m * 60 * 1000); // 1m 5m 10m 30m 1h 2h 4h
 const triviaCooldowns = new Map();
 const geminiUserCooldowns = new Map();
@@ -566,6 +571,7 @@ loadTriviaScores();
 loadMessageCounts();
 loadRouletteStreaks();
 loadKnownEmergencies();
+try { if (fs.existsSync(VOLANTA_LAST_FLIGHT_PATH)) { lastVolantaFlightId = JSON.parse(fs.readFileSync(VOLANTA_LAST_FLIGHT_PATH)).flightId; } } catch(e) {}
 
 // ====== Ready / Command Registration ======
 client.once("ready", async () => {
@@ -681,6 +687,12 @@ client.once("ready", async () => {
   // Start rage mode scheduler
   scheduleRageMode(client);
   console.log("Rage mode scheduler started.");
+
+  // Start Volanta flight poller
+  if (config.volantaUserId && config.volantaChannelId) {
+    setInterval(() => pollVolantaFlights(client), 5 * 60 * 1000);
+    console.log('Volanta flight poller started.');
+  }
 
   // Start emergency squawk polling
   if (config.emergencyChannelId) {
@@ -2056,6 +2068,57 @@ const purgeMessages = async (interaction) => {
     await interaction.editReply('An error occurred while purging messages.');
   }
 };
+
+// ====== Volanta Flight Poller ======
+async function pollVolantaFlights(client) {
+  try {
+    if (!config.volantaUserId || !config.volantaChannelId) return;
+    const res = await axios.get(
+      ,
+      { headers: { Accept: 'application/json' }, timeout: 10000 }
+    );
+    const flights = res.data;
+    if (!flights || !flights.length) return;
+    const flight = flights[0].flight;
+    if (!flight || flight.state !== 'Completed') return;
+    if (flight.id === lastVolantaFlightId) return;
+    lastVolantaFlightId = flight.id;
+    try { fs.writeFileSync(VOLANTA_LAST_FLIGHT_PATH, JSON.stringify({ flightId: flight.id }, null, 2)); } catch(e) {}
+    const channel = client.guilds.cache.first()?.channels.cache.get(config.volantaChannelId);
+    if (!channel) return;
+    const origin = flight.originIcao || '???';
+    const dest = flight.destinationIcao || '???';
+    const originName = flight.origin?.name || origin;
+    const destName = flight.destination?.name || dest;
+    const aircraft = flight.aircraftIcao || 'Unknown';
+    const aircraftTitle = flight.aircraftTitle || aircraft;
+    const airline = flight.aircraft?.airline?.name || '';
+    const callsign = flight.callsign || flight.flightNumber || 'Unknown';
+    const distNm = flight.distanceFlownInNauticalMiles ?  : 'Unknown';
+    const flightTimeSec = flight.realFlightTime || flight.effectiveFlightTime || 0;
+    const hrs = Math.floor(flightTimeSec / 3600);
+    const mins = Math.floor((flightTimeSec % 3600) / 60);
+    const duration = flightTimeSec ?  : 'Unknown';
+    const landingRate = flight.landingRate ?  : 'Unknown';
+    const fuelBurn = flight.fuelBurn ?  : null;
+    const embed = new EmbedBuilder()
+      .setTitle()
+      .setDescription()
+      .addFields(
+        { name: '🛫 Route', value: , inline: true },
+        { name: '🛩️ Aircraft', value:  · , inline: true },
+        { name: '⏱️ Duration', value: duration, inline: true },
+        { name: '📏 Distance', value: distNm, inline: true },
+        { name: '🛬 Landing Rate', value: landingRate, inline: true },
+        ...(fuelBurn ? [{ name: '⛽ Fuel Burn', value: fuelBurn, inline: true }] : []),
+      )
+      .setColor(0x5865F2)
+      .setTimestamp()
+      .setFooter({ text:  })
+      .setURL();
+    await channel.send({ embeds: [embed] });
+  } catch (e) { console.error('Volanta poll error:', e.message); }
+}
 
 // ====== Emergency Squawk Poller ======
 async function pollEmergencies(client) {
