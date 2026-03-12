@@ -421,7 +421,7 @@ function scheduleRandomMessage(guild) {
 
 function scheduleRageMode(client) {
   // Fires at a completely random point within the next 12 hours
-  const delay = Math.floor(Math.random() * 12 * 60 * 60 * 1000);
+  const delay = Math.floor(Math.random() * 8 * 60 * 60 * 1000);
   setTimeout(async () => {
     rageModeActive = true;
     // Announce in the rage channel
