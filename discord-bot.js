@@ -26,9 +26,9 @@ const config = {
   emergencyChannelId: "1412039978057470042", // <-- Add channel ID to receive automatic emergency squawk alerts
   rageChannelId: "1412039978057470042", // <-- Channel to announce rage mode
   mapboxToken: process.env.MAPBOX_TOKEN,        // <-- Free token from https://mapbox.com (50,000 requests/month free)
-  volantaUserId: "c8dce899-5b6b-4534-3fb9-08dca7f6f6ee", // Celestial Volanta user ID
-  volantaUsername: "Celestial",
-  volantaChannelId: "1409584122208456856",
+  volantaUserId: "dca5400d-acf8-49b9-ca4e-08dc66e8a2e4", // Volanta user ID
+  volantaUsername: "SharpPilot",
+  volantaChannelId: "1412039978057470042",
 };
 
 // ====== Aviation Constants ======
