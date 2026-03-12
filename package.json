@@ -1,0 +1,22 @@
+{
+  "name": "discord-bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "bot.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@discordjs/voice": "^0.18.0",
+    "axios": "^1.11.0",
+    "cheerio": "^1.1.2",
+    "discord.js": "^14.21.0",
+    "h3-js": "^4.4.0",
+    "node-fetch": "^3.3.2",
+    "puppeteer": "^24.17.0"
+  }
+}

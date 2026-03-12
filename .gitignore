@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Secrets & config
+ecosystem.config.js
+discord-token.config
+discord-token-b.config
+
+# Runtime data files
+greyhound-balances.json
+greyhound-bets.json
+greyhound-schedule.json
+message_counts.json
+personality.json
+roulette_streaks.json
+roulette-config.json
+settings.json
+trivia_scores.json
+tts-settings.json
+permissions.json
+
+# Logs & backups
+*.txt
+*.save
