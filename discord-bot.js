@@ -1083,6 +1083,10 @@ client.on("interactionCreate", async (interaction) => {
         "I think you should join ISIS and forget about it",
         "3 hits with a clawhammer and this all goes away",
         "मुझे करी बहुत पसंद है - Deepinthesand",
+        "I am a female police officer",
+        "I am a 100% self taught volanta flight simulation enthusiast",
+        "boobies :3",
+        "Step 1. Get some bitches. Step 2. Go outside",
       ];
 
       const josepQuote = messages[Math.floor(Math.random() * messages.length)];
