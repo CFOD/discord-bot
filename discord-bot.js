@@ -1074,7 +1074,15 @@ client.on("interactionCreate", async (interaction) => {
 
       // ─── Add your custom answers below ────────────────────────────
       const customAnswers = [
-        // "Your custom answer here.",
+        "50% chance of terminal cancer on the horizon",
+        "Ask later when im done fucking davids mum",
+        "Israel has the right to defend itself",
+        "more chance of Iwan landing smoothly",
+        "Sounds like one of jays groundbreaking ideas",
+        "Davids mum quitting sex working is more likely than that",
+        "I think you should join ISIS and forget about it",
+        "3 hits with a clawhammer and this all goes away",
+        "मुझे करी बहुत पसंद है - Deepinthesand",
       ];
 
       const josepQuote = messages[Math.floor(Math.random() * messages.length)];
