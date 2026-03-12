@@ -271,6 +271,7 @@ const PERSONALITY_PATH = path.join(__dirname, 'personality.json');
 const TRIVIA_SCORES_PATH = path.join(__dirname, 'trivia_scores.json');
 const MESSAGE_COUNTS_PATH = path.join(__dirname, 'message_counts.json');
 const ROULETTE_STREAKS_PATH = path.join(__dirname, 'roulette_streaks.json');
+const KNOWN_EMERGENCIES_PATH = path.join(__dirname, 'known_emergencies.json');
 const DEFAULT_STORY_LENGTH = 15;
 
 // ====== Permissions and Settings Functions ======
@@ -494,6 +495,26 @@ function saveRouletteStreaks() {
   }
 }
 
+function loadKnownEmergencies() {
+  try {
+    if (fs.existsSync(KNOWN_EMERGENCIES_PATH)) {
+      const data = JSON.parse(fs.readFileSync(KNOWN_EMERGENCIES_PATH, 'utf8'));
+      knownEmergencies.clear();
+      Object.entries(data).forEach(([icao24, entry]) => {
+        knownEmergencies.set(icao24, entry);
+      });
+    }
+  } catch (e) { console.error('Failed to load known emergencies:', e); }
+}
+
+function saveKnownEmergencies() {
+  try {
+    const obj = {};
+    knownEmergencies.forEach((v, k) => { obj[k] = v; });
+    fs.writeFileSync(KNOWN_EMERGENCIES_PATH, JSON.stringify(obj, null, 2));
+  } catch (e) { console.error('Failed to save known emergencies:', e); }
+}
+
 function loadTriviaScores() {
   try {
     if (fs.existsSync(TRIVIA_SCORES_PATH)) {
@@ -543,6 +564,7 @@ loadPersonality();
 loadTriviaScores();
 loadMessageCounts();
 loadRouletteStreaks();
+loadKnownEmergencies();
 
 // ====== Ready / Command Registration ======
 client.once("ready", async () => {
@@ -2049,8 +2071,12 @@ async function pollEmergencies(client) {
 
     // Post new emergencies
     for (const [icao24, data] of currentEmergencies) {
-      if (!knownEmergencies.has(icao24)) {
+      const existing = knownEmergencies.get(icao24);
+      const isNew = !existing;
+      const squawkChanged = existing && existing.squawk !== data.squawk;
+      if (isNew || squawkChanged) {
         knownEmergencies.set(icao24, data);
+        saveKnownEmergencies();
         const info = EMERGENCY_SQUAWKS[data.squawk];
         const posStr = data.lat && data.lon
           ? `[${data.lat.toFixed(2)}°, ${data.lon.toFixed(2)}°](https://www.flightradar24.com/${data.lat.toFixed(2)},${data.lon.toFixed(2)}/8)`
@@ -2090,7 +2116,7 @@ async function pollEmergencies(client) {
 
     // Clear resolved emergencies
     for (const icao24 of knownEmergencies.keys()) {
-      if (!currentEmergencies.has(icao24)) knownEmergencies.delete(icao24);
+      if (!currentEmergencies.has(icao24)) { knownEmergencies.delete(icao24); saveKnownEmergencies(); }
     }
   } catch (error) {
     console.error('Emergency poll error:', error.message);
