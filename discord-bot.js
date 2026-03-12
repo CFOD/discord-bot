@@ -283,6 +283,7 @@ let messageCounts = {};
 const rouletteCooldowns = new Map();
 const rouletteStreaks = new Map(); // userId -> { count, lastMutedAt }
 let rageModeActive = false;
+let emergencyFirstPoll = true;
 const MUTE_DURATIONS_MS = [1, 5, 10, 30, 60, 120, 240].map(m => m * 60 * 1000); // 1m 5m 10m 30m 1h 2h 4h
 const triviaCooldowns = new Map();
 const geminiUserCooldowns = new Map();
@@ -2069,6 +2070,18 @@ async function pollEmergencies(client) {
     const channel = client.channels.cache.get(config.emergencyChannelId);
     if (!channel) return;
 
+    // On first poll after startup, silently populate without posting
+    if (emergencyFirstPoll) {
+      for (const [icao24, data] of currentEmergencies) {
+        if (!knownEmergencies.has(icao24)) {
+          knownEmergencies.set(icao24, { ...data, lastSeen: Date.now(), firstDetectedAt: Date.now() });
+        }
+      }
+      saveKnownEmergencies();
+      emergencyFirstPoll = false;
+      return;
+    }
+
     // Update lastSeen for all active emergencies
     for (const [icao24, data] of currentEmergencies) {
       const existing = knownEmergencies.get(icao24);
@@ -2083,7 +2096,7 @@ async function pollEmergencies(client) {
       const isNew = !existing;
       const squawkChanged = existing && existing.squawk !== data.squawk;
       if (isNew || squawkChanged) {
-        knownEmergencies.set(icao24, { ...data, lastSeen: Date.now() });
+        knownEmergencies.set(icao24, { ...data, lastSeen: Date.now(), firstDetectedAt: Date.now() });
         saveKnownEmergencies();
         const info = EMERGENCY_SQUAWKS[data.squawk];
         const posStr = data.lat && data.lon
@@ -2099,6 +2112,7 @@ async function pollEmergencies(client) {
             { name: '🏔️ Altitude', value: data.altFt ? `${data.altFt.toLocaleString()} ft` : 'Unknown', inline: true },
             { name: '💨 Speed', value: data.speedKt ? `${data.speedKt} kt` : 'Unknown', inline: true },
             { name: '📍 Position', value: posStr, inline: true },
+            { name: '🕐 First Detected', value: `<t:${Math.floor((data.firstDetectedAt || Date.now()) / 1000)}:R>`, inline: true },
           )
           .setColor(info.color)
           .setTimestamp()
