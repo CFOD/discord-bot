@@ -248,6 +248,7 @@ const EMERGENCY_SQUAWKS = {
   '7500': { label: '🔫 HIJACK', color: 0xff0000 },
 };
 const knownEmergencies = new Map();
+const pendingEmergencies = new Map(); // requires 2 consecutive polls before alerting
 
 // ====== Constants & Initial Setup ======
 const restartFile = "./restart_channel.txt";
@@ -2150,29 +2151,41 @@ async function pollEmergencies(client) {
     // On first poll after startup, silently populate without posting
     if (emergencyFirstPoll) {
       for (const [icao24, data] of currentEmergencies) {
-        if (!knownEmergencies.has(icao24)) {
-          knownEmergencies.set(icao24, { ...data, lastSeen: Date.now(), firstDetectedAt: Date.now() });
-        }
+        knownEmergencies.set(icao24, { ...data, lastSeen: Date.now(), firstDetectedAt: Date.now() });
+        pendingEmergencies.delete(icao24);
       }
       saveKnownEmergencies();
       emergencyFirstPoll = false;
       return;
     }
 
-    // Update lastSeen for all active emergencies
+    // Update lastSeen for confirmed emergencies
     for (const [icao24, data] of currentEmergencies) {
       const existing = knownEmergencies.get(icao24);
       if (existing && existing.squawk === data.squawk) {
         knownEmergencies.set(icao24, { ...existing, lastSeen: Date.now() });
       }
     }
+    // Remove pending if aircraft no longer showing emergency squawk
+    for (const [icao24] of pendingEmergencies) {
+      if (!currentEmergencies.has(icao24)) pendingEmergencies.delete(icao24);
+    }
 
-    // Post new emergencies
+    // Require 2 consecutive polls before alerting (filters transient false positives)
     for (const [icao24, data] of currentEmergencies) {
       const existing = knownEmergencies.get(icao24);
-      const isNew = !existing;
       const squawkChanged = existing && existing.squawk !== data.squawk;
-      if (isNew || squawkChanged) {
+      if (!existing || squawkChanged) {
+        if (squawkChanged) {
+          pendingEmergencies.set(icao24, { ...data, pendingSince: Date.now() });
+          continue;
+        }
+        if (!pendingEmergencies.has(icao24)) {
+          pendingEmergencies.set(icao24, { ...data, pendingSince: Date.now() });
+          continue;
+        }
+        // confirmed on second poll
+        pendingEmergencies.delete(icao24);
         knownEmergencies.set(icao24, { ...data, lastSeen: Date.now(), firstDetectedAt: Date.now() });
         saveKnownEmergencies();
         const info = EMERGENCY_SQUAWKS[data.squawk];
