@@ -2032,38 +2032,46 @@ const purgeMessages = async (interaction) => {
   const targetId = target === 'bot' ? client.user.id : interaction.user.id;
   const label = target === 'bot' ? 'bot' : 'your';
 
+  const channels = interaction.guild.channels.cache.filter(c =>
+    c.isTextBased() && c.viewable && !c.isThread()
+  );
+
   let deleted = 0;
-  let lastId = null;
 
   try {
-    // Scan up to 1000 messages back (10 pages of 100)
-    for (let page = 0; page < 10; page++) {
-      const options = { limit: 100 };
-      if (lastId) options.before = lastId;
+    await interaction.editReply(`Scanning ${channels.size} channels...`);
 
-      const fetched = await interaction.channel.messages.fetch(options);
-      if (!fetched.size) break;
+    for (const [, ch] of channels) {
+      let lastId = null;
+      for (let page = 0; page < 10; page++) {
+        const options = { limit: 100 };
+        if (lastId) options.before = lastId;
 
-      lastId = fetched.last().id;
+        let fetched;
+        try { fetched = await ch.messages.fetch(options); } catch { break; }
+        if (!fetched.size) break;
 
-      const targetMsgs = fetched.filter(m => m.author.id === targetId);
-      if (targetMsgs.size > 0) {
-        // Try bulkDelete first (fast, needs MANAGE_MESSAGES)
-        // Fall back to individual deletion (slower, but works for own messages without extra perms)
-        try {
-          const result = await interaction.channel.bulkDelete(targetMsgs, true);
-          deleted += result.size;
-        } catch {
-          for (const msg of targetMsgs.values()) {
-            try { await msg.delete(); deleted++; } catch {}
+        lastId = fetched.last().id;
+
+        const targetMsgs = fetched.filter(m => m.author.id === targetId);
+        if (targetMsgs.size > 0) {
+          try {
+            const result = await ch.bulkDelete(targetMsgs, true);
+            deleted += result.size;
+          } catch {
+            for (const msg of targetMsgs.values()) {
+              try { await msg.delete(); deleted++; } catch {}
+            }
           }
         }
-      }
 
-      if (fetched.size < 100) break; // reached end of channel history
+        if (fetched.size < 100) break;
+      }
     }
 
-    await interaction.editReply(deleted > 0 ? `Purged **${deleted}** ${label} messages.` : `No ${label} messages found in the last 1000 messages.`);
+    await interaction.editReply(deleted > 0
+      ? `Purged **${deleted}** ${label} messages across all channels.`
+      : `No ${label} messages found (searched last 1000 messages per channel).`);
   } catch (error) {
     console.error('Error purging messages:', error);
     await interaction.editReply('An error occurred while purging messages.');
