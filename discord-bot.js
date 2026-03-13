@@ -482,6 +482,8 @@ async function playAdhan(client, prayerName) {
       channelId: voiceChannel.id,
       guildId: guild.id,
       adapterCreator: guild.voiceAdapterCreator,
+      selfDeaf: false,
+      selfMute: false,
     });
 
     try {
