@@ -466,21 +466,15 @@ async function schedulePrayerTimes(client) {
 }
 
 async function playAdhan(client, prayerName) {
-  console.log(`playAdhan called for ${prayerName}`);
   try {
     const guild = client.guilds.cache.first();
-    console.log(`Guild: ${guild ? guild.name : 'NOT FOUND'}`);
     if (!guild) return;
 
-    // Find a populated voice channel
-    const allVoice = guild.channels.cache.filter(ch => ch.type === ChannelType.GuildVoice);
-    console.log(`Voice channels: ${allVoice.size}, occupied: ${allVoice.filter(ch => ch.members.size > 0).size}`);
-    const voiceChannel = allVoice.find(ch => ch.members.size > 0);
+    const voiceChannel = guild.channels.cache.find(ch => ch.type === ChannelType.GuildVoice && ch.members.size > 0);
     if (!voiceChannel) {
       console.log(`Adhan: no occupied voice channels for ${prayerName}`);
       return;
     }
-    console.log(`Joining voice channel: ${voiceChannel.name}`);
 
     const connection = joinVoiceChannel({
       channelId: voiceChannel.id,
@@ -490,17 +484,10 @@ async function playAdhan(client, prayerName) {
       selfMute: false,
     });
 
-    connection.on('stateChange', (oldState, newState) => {
-      console.log(`Voice state change: ${oldState.status} -> ${newState.status}`);
-    });
-    connection.on('debug', msg => console.log('Voice debug:', msg));
-
     try {
       await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
-      console.log('Voice connection ready');
     } catch (e) {
-      console.error('Voice connection failed:', e.message);
-      console.error('Current connection status:', connection.state.status);
+      console.error('Adhan voice connection failed:', e.message);
       connection.destroy();
       return;
     }
@@ -524,7 +511,7 @@ async function playAdhan(client, prayerName) {
       connection.destroy();
     });
 
-    console.log(`Adhan resource created for ${prayerName}, subscribing and playing in ${voiceChannel.name}`);
+    console.log(`Playing adhan for ${prayerName} in ${voiceChannel.name}`);
   } catch (e) {
     console.error('Adhan playback error:', e.message);
   }
