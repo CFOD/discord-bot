@@ -251,6 +251,7 @@ const knownEmergencies = new Map();
 const pendingEmergencies = new Map(); // requires 2 consecutive polls before alerting
 const purgeChannelCache = new Map(); // channelId -> lastMessageId at time of last purge
 let rouletteTimeoutActive = false; // suppresses auto-remove when roulette times out the owner
+const safeStreaks = new Map(); // tracks consecutive SAFE outcomes per user
 let autoRemoveTimeoutEnabled = false; // toggled via /toggleprotection
 
 // ====== Constants & Initial Setup ======
@@ -1293,7 +1294,26 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       if (!isBang) {
-        await interaction.editReply({ content: `🔫 *click* **SAFE!** The roulette spared everyone today.` });
+        const spinnerId = interaction.user.id;
+        const safeCount = (safeStreaks.get(spinnerId) || 0) + 1;
+        safeStreaks.set(spinnerId, safeCount);
+
+        if (safeCount >= 3) {
+          safeStreaks.set(spinnerId, 0);
+          const spinnerMember = await interaction.guild.members.fetch(spinnerId).catch(() => null);
+          await interaction.editReply({ content: `🔫 *click* **SAFE!** ...But that's 3 safes in a row. The roulette gods are not amused. <@${spinnerId}> gets **4 hours** of silence.` });
+          if (spinnerMember) {
+            try {
+              if (spinnerId === config.ownerId) rouletteTimeoutActive = true;
+              await spinnerMember.timeout(4 * 60 * 60 * 1000, 'Roulette: 3 safes in a row');
+              if (spinnerId === config.ownerId) setTimeout(() => { rouletteTimeoutActive = false; }, 5000);
+            } catch (e) {
+              console.error('Safe streak timeout failed:', e.message);
+            }
+          }
+        } else {
+          await interaction.editReply({ content: `🔫 *click* **SAFE!** The roulette spared everyone today. *(${safeCount}/3 safes)*` });
+        }
       } else {
         try {
           // Escalating mute duration based on consecutive mutes
@@ -1304,6 +1324,7 @@ client.on("interactionCreate", async (interaction) => {
           rouletteStreaks.set(targetMember.id, { count: currentStreak + 1, lastMutedAt: Date.now() });
           saveRouletteStreaks();
 
+          safeStreaks.set(interaction.user.id, 0);
           if (targetMember.id === config.ownerId) rouletteTimeoutActive = true;
           await targetMember.timeout(timeoutDuration, "Roulette victim");
           if (targetMember.id === config.ownerId) setTimeout(() => { rouletteTimeoutActive = false; }, 5000);
