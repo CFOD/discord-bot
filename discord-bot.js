@@ -2051,7 +2051,7 @@ function scheduleAutoPurge(client) {
 
       for (const [, ch] of channels) {
         let lastId = null;
-        for (let page = 0; page < 10; page++) {
+        for (let page = 0; page < 50; page++) {
           const options = { limit: 100 };
           if (lastId) options.before = lastId;
           let fetched;
@@ -2122,23 +2122,28 @@ const purgeMessages = async (interaction) => {
   const targetId = target === 'bot' ? client.user.id : interaction.user.id;
   const label = target === 'bot' ? 'bot' : 'your';
 
-  const channels = interaction.guild.channels.cache.filter(c =>
+  const channels = [...interaction.guild.channels.cache.filter(c =>
     c.isTextBased() && c.viewable && !c.isThread()
-  );
+  ).values()];
+
+  const skipped = channels.filter(ch => purgeChannelCache.get(ch.id) === ch.lastMessageId).length;
+  const toScan = channels.length - skipped;
 
   let deleted = 0;
+  let scanned = 0;
+  let lastUpdate = Date.now();
+
+  const statusLine = () =>
+    `🔍 **${scanned}/${toScan}** channels scanned — **${deleted}** deleted${skipped ? ` *(${skipped} skipped)*` : ''}`;
 
   try {
-    const skipped = [...channels.values()].filter(ch => purgeChannelCache.get(ch.id) === ch.lastMessageId).length;
-    const toScan = channels.size - skipped;
-    await interaction.editReply(`Scanning ${toScan} channels${skipped ? ` (skipping ${skipped} with no new activity)` : ''}...`);
+    await interaction.editReply(statusLine());
 
-    for (const [, ch] of channels) {
-      // Skip if nothing has been posted since the last purge
+    for (const ch of channels) {
       if (purgeChannelCache.get(ch.id) === ch.lastMessageId) continue;
 
       let lastId = null;
-      for (let page = 0; page < 10; page++) {
+      for (let page = 0; page < 50; page++) {
         const options = { limit: 100 };
         if (lastId) options.before = lastId;
 
@@ -2163,18 +2168,25 @@ const purgeMessages = async (interaction) => {
         if (fetched.size < 100) break;
       }
 
-      // Record the channel's latest message ID so we can skip it next time if nothing new is posted
       purgeChannelCache.set(ch.id, ch.lastMessageId);
+      scanned++;
+
+      // Update every 5 channels or every 8 seconds
+      if (scanned % 5 === 0 || Date.now() - lastUpdate > 8000) {
+        await interaction.editReply(statusLine()).catch(() => {});
+        lastUpdate = Date.now();
+      }
     }
 
     await interaction.editReply(deleted > 0
-      ? `Purged **${deleted}** ${label} messages across all channels.`
-      : `No ${label} messages found (searched last 1000 messages per channel).`);
+      ? `✅ Done — purged **${deleted}** ${label} messages across **${toScan}** channels.${skipped ? ` *(${skipped} skipped)*` : ''}`
+      : `✅ Done — no ${label} messages found across **${toScan}** channels.${skipped ? ` *(${skipped} skipped)*` : ''}`);
   } catch (error) {
     console.error('Error purging messages:', error);
     await interaction.editReply('An error occurred while purging messages.');
   }
 };
+
 
 // ====== Volanta Flight Poller ======
 async function pollVolantaFlights(client) {
