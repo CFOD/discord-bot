@@ -2,7 +2,7 @@
 const { Client, GatewayIntentBits, REST, Routes, Partials, ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, AttachmentBuilder } = require("discord.js");
 const fs = require("fs");
 const path = require("path");
-const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, getVoiceConnection, entersState, VoiceConnectionStatus } = require("@discordjs/voice");
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, StreamType, getVoiceConnection, entersState, VoiceConnectionStatus } = require("@discordjs/voice");
 const { exec } = require("child_process");
 const axios = require("axios");
 let Jimp = null;
@@ -494,10 +494,12 @@ async function playAdhan(client, prayerName) {
     }
 
     const player = createAudioPlayer();
-    const resource = createAudioResource(ADHAN_PATH);
+    const resource = createAudioResource(ADHAN_PATH, { inputType: StreamType.Arbitrary });
     connection.subscribe(player);
     player.play(resource);
 
+    player.on(AudioPlayerStatus.Playing, () => console.log(`Adhan now playing for ${prayerName}`));
+    player.on(AudioPlayerStatus.Buffering, () => console.log('Adhan buffering...'));
     player.on(AudioPlayerStatus.Idle, () => {
       connection.destroy();
       console.log(`Adhan finished for ${prayerName}`);
@@ -508,7 +510,7 @@ async function playAdhan(client, prayerName) {
       connection.destroy();
     });
 
-    console.log(`Playing adhan for ${prayerName} in ${voiceChannel.name}`);
+    console.log(`Adhan resource created for ${prayerName}, subscribing and playing in ${voiceChannel.name}`);
   } catch (e) {
     console.error('Adhan playback error:', e.message);
   }
