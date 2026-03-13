@@ -711,7 +711,7 @@ client.once("ready", async () => {
     { name: "log", description: "Big batty gyal good evening" },
     { name: "clearlog", description: "You look like your chicken need seasoning" },
     { name: "toggleprotection", description: "Toggle the auto-remove timeout protection on or off." },
-    { name: "adhan", description: "[Owner] Immediately play the Adhan in an occupied voice channel for testing." },
+    { name: "adhan", description: "..." },
     {
       name: "unmute",
       description: "Unmutes a specific user in your voice channel.",
