@@ -1379,16 +1379,27 @@ Answer wrong → YOU get **${durationLabel}**.
                     if (targetMember.id === config.ownerId) setTimeout(() => { rouletteTimeoutActive = false; }, 5000);
                     await btn.update({ content: `✅ Correct! <@${targetMember.id}>'s timeout has been doubled to **${doubleDurationLabel}**.`, components: [] });
                   } else {
+                    // Free the victim
+                    await targetMember.timeout(null, 'Roulette: double or nothing — spinner wrong, victim freed').catch(() => {});
+                    // Timeout the spinner
                     const spinnerMember = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
                     if (spinnerMember) {
                       if (interaction.user.id === config.ownerId) rouletteTimeoutActive = true;
                       await spinnerMember.timeout(timeoutDuration, 'Roulette: double or nothing — spinner wrong');
                       if (interaction.user.id === config.ownerId) setTimeout(() => { rouletteTimeoutActive = false; }, 5000);
                     }
-                    await btn.update({ content: `❌ Wrong! The correct answer was **${correct}**. You get **${durationLabel}** of silence.`, components: [] });
+                    await btn.update({ content: `❌ Wrong! The correct answer was **${correct}**. <@${targetMember.id}> goes free — you get **${durationLabel}** of silence instead.`, components: [] });
                   }
                 } catch {
-                  await donMsg.edit({ content: `⏱️ Time's up — double or nothing expired.`, components: [] }).catch(() => {});
+                  // No answer — same as wrong: free victim, timeout spinner
+                  await targetMember.timeout(null, 'Roulette: double or nothing — no answer, victim freed').catch(() => {});
+                  const spinnerMember = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+                  if (spinnerMember) {
+                    if (interaction.user.id === config.ownerId) rouletteTimeoutActive = true;
+                    await spinnerMember.timeout(timeoutDuration, 'Roulette: double or nothing — no answer').catch(() => {});
+                    if (interaction.user.id === config.ownerId) setTimeout(() => { rouletteTimeoutActive = false; }, 5000);
+                  }
+                  await donMsg.edit({ content: `⏱️ Time's up! <@${targetMember.id}> goes free — <@${interaction.user.id}> gets **${durationLabel}** for not answering.`, components: [] }).catch(() => {});
                 }
               }
             } catch (e) {
