@@ -249,6 +249,7 @@ const EMERGENCY_SQUAWKS = {
 };
 const knownEmergencies = new Map();
 const pendingEmergencies = new Map(); // requires 2 consecutive polls before alerting
+const purgeChannelCache = new Map(); // channelId -> lastMessageId at time of last purge
 
 // ====== Constants & Initial Setup ======
 const restartFile = "./restart_channel.txt";
@@ -2060,9 +2061,14 @@ const purgeMessages = async (interaction) => {
   let deleted = 0;
 
   try {
-    await interaction.editReply(`Scanning ${channels.size} channels...`);
+    const skipped = [...channels.values()].filter(ch => purgeChannelCache.get(ch.id) === ch.lastMessageId).length;
+    const toScan = channels.size - skipped;
+    await interaction.editReply(`Scanning ${toScan} channels${skipped ? ` (skipping ${skipped} with no new activity)` : ''}...`);
 
     for (const [, ch] of channels) {
+      // Skip if nothing has been posted since the last purge
+      if (purgeChannelCache.get(ch.id) === ch.lastMessageId) continue;
+
       let lastId = null;
       for (let page = 0; page < 10; page++) {
         const options = { limit: 100 };
@@ -2088,6 +2094,9 @@ const purgeMessages = async (interaction) => {
 
         if (fetched.size < 100) break;
       }
+
+      // Record the channel's latest message ID so we can skip it next time if nothing new is posted
+      purgeChannelCache.set(ch.id, ch.lastMessageId);
     }
 
     await interaction.editReply(deleted > 0
