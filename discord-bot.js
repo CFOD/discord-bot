@@ -250,6 +250,7 @@ const EMERGENCY_SQUAWKS = {
 const knownEmergencies = new Map();
 const pendingEmergencies = new Map(); // requires 2 consecutive polls before alerting
 const purgeChannelCache = new Map(); // channelId -> lastMessageId at time of last purge
+let rouletteTimeoutActive = false; // suppresses auto-remove when roulette times out the owner
 
 // ====== Constants & Initial Setup ======
 const restartFile = "./restart_channel.txt";
@@ -1292,7 +1293,9 @@ client.on("interactionCreate", async (interaction) => {
           rouletteStreaks.set(targetMember.id, { count: currentStreak + 1, lastMutedAt: Date.now() });
           saveRouletteStreaks();
 
+          if (targetMember.id === config.ownerId) rouletteTimeoutActive = true;
           await targetMember.timeout(timeoutDuration, "Roulette victim");
+          if (targetMember.id === config.ownerId) setTimeout(() => { rouletteTimeoutActive = false; }, 5000);
 
           const mins = timeoutDuration / 60000;
           const durationLabel = mins >= 60 ? `${mins / 60}h` : `${mins}m`;
@@ -1860,6 +1863,7 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
   const wasTimedOut = !oldMember.isCommunicationDisabled();
   const isNowTimedOut = newMember.isCommunicationDisabled();
   if (wasTimedOut && isNowTimedOut) {
+    if (rouletteTimeoutActive) return; // roulette applied this timeout — leave it
     try {
       await newMember.timeout(null, 'Auto-removed: owner timeout protection');
       console.log('Auto-removed timeout on owner');
