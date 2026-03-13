@@ -858,7 +858,12 @@ client.on("interactionCreate", async (interaction) => {
              return interaction.reply({ content: "Please provide a valid user.", ephemeral: true });
         }
 
-        const memberToUntimeout = await interaction.guild.members.fetch(userToUntimeout.id).catch(() => null);
+        const guild = interaction.guild || client.guilds.cache.first();
+        if (!guild) {
+            return interaction.reply({ content: "Could not find the server.", ephemeral: true });
+        }
+
+        const memberToUntimeout = await guild.members.fetch(userToUntimeout.id).catch(() => null);
         if (!memberToUntimeout) {
             return interaction.reply({ content: "Could not find that user in this server.", ephemeral: true });
         }
