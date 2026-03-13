@@ -706,6 +706,7 @@ client.once("ready", async () => {
     { name: "log", description: "Big batty gyal good evening" },
     { name: "clearlog", description: "You look like your chicken need seasoning" },
     { name: "toggleprotection", description: "Toggle the auto-remove timeout protection on or off." },
+    { name: "adhan", description: "[Owner] Immediately play the Adhan in an occupied voice channel for testing." },
     {
       name: "unmute",
       description: "Unmutes a specific user in your voice channel.",
@@ -1165,6 +1166,12 @@ client.on("interactionCreate", async (interaction) => {
       if (!hasPermission(interaction, config.ownerId)) return;
       autoRemoveTimeoutEnabled = !autoRemoveTimeoutEnabled;
       await interaction.reply({ content: `Timeout protection is now **${autoRemoveTimeoutEnabled ? 'ON' : 'OFF'}**.`, ephemeral: true });
+      break;
+    }
+    case "adhan": {
+      if (!hasPermission(interaction, config.ownerId)) return;
+      await interaction.reply({ content: '🕌 Playing Adhan...', ephemeral: true });
+      await playAdhan(client, 'Test');
       break;
     }
     case "setstorylength": {
