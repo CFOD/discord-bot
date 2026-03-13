@@ -493,6 +493,7 @@ async function playAdhan(client, prayerName) {
     connection.on('stateChange', (oldState, newState) => {
       console.log(`Voice state change: ${oldState.status} -> ${newState.status}`);
     });
+    connection.on('debug', msg => console.log('Voice debug:', msg));
 
     try {
       await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
