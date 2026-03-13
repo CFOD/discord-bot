@@ -255,6 +255,23 @@ const EMERGENCY_SQUAWKS = {
 const knownEmergencies = new Map();
 const pendingEmergencies = new Map(); // requires 2 consecutive polls before alerting
 const purgeChannelCache = new Map(); // channelId -> lastMessageId at time of last purge
+
+function loadPurgeCache() {
+  try {
+    if (fs.existsSync(PURGE_CACHE_PATH)) {
+      const obj = JSON.parse(fs.readFileSync(PURGE_CACHE_PATH, 'utf8'));
+      for (const [k, v] of Object.entries(obj)) purgeChannelCache.set(k, v);
+    }
+  } catch {}
+}
+
+function savePurgeCache() {
+  const obj = {};
+  purgeChannelCache.forEach((v, k) => { obj[k] = v; });
+  try { fs.writeFileSync(PURGE_CACHE_PATH, JSON.stringify(obj)); } catch {}
+}
+
+loadPurgeCache();
 let rouletteTimeoutActive = false; // suppresses auto-remove when roulette times out the owner
 const safeStreaks = new Map(); // tracks consecutive SAFE outcomes per user
 let autoRemoveTimeoutEnabled = false; // toggled via /toggleprotection
@@ -284,6 +301,7 @@ const PERSONALITY_PATH = path.join(__dirname, 'personality.json');
 const TRIVIA_SCORES_PATH = path.join(__dirname, 'trivia_scores.json');
 const MESSAGE_COUNTS_PATH = path.join(__dirname, 'message_counts.json');
 const ROULETTE_STREAKS_PATH = path.join(__dirname, 'roulette_streaks.json');
+const PURGE_CACHE_PATH = path.join(__dirname, 'purge_cache.json');
 const VOLANTA_LAST_FLIGHT_PATH = path.join(__dirname, 'volanta_last_flight.json');
 const KNOWN_EMERGENCIES_PATH = path.join(__dirname, 'known_emergencies.json');
 const DEFAULT_STORY_LENGTH = 15;
@@ -2329,7 +2347,6 @@ const getStatus = async (interaction) => {
 };
 
 const purgeMessages = async (interaction) => {
-  purgeChannelCache.clear(); // always do a full scan on manual purge
   if (!hasPermission(interaction, config.ownerId)) return;
   await interaction.deferReply({ ephemeral: true });
 
@@ -2384,6 +2401,7 @@ const purgeMessages = async (interaction) => {
       }
 
       purgeChannelCache.set(ch.id, ch.lastMessageId);
+      savePurgeCache();
       scanned++;
 
       // Update every 5 channels or every 8 seconds
