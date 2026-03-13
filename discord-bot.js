@@ -1852,6 +1852,21 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
+// ====== Auto-remove timeout on owner ======
+client.on('guildMemberUpdate', async (oldMember, newMember) => {
+  if (newMember.user.id !== config.ownerId) return;
+  const wasTimedOut = !oldMember.isCommunicationDisabled();
+  const isNowTimedOut = newMember.isCommunicationDisabled();
+  if (wasTimedOut && isNowTimedOut) {
+    try {
+      await newMember.timeout(null, 'Auto-removed: owner timeout protection');
+      console.log('Auto-removed timeout on owner');
+    } catch (e) {
+      console.error('Failed to auto-remove owner timeout:', e.message);
+    }
+  }
+});
+
 // ====== DM Handler ======
 let storyMessages = [];
 let lastAuthorId = null;
