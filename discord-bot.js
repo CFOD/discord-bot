@@ -490,11 +490,16 @@ async function playAdhan(client, prayerName) {
       selfMute: false,
     });
 
+    connection.on('stateChange', (oldState, newState) => {
+      console.log(`Voice state change: ${oldState.status} -> ${newState.status}`);
+    });
+
     try {
-      await entersState(connection, VoiceConnectionStatus.Ready, 10_000);
+      await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
       console.log('Voice connection ready');
     } catch (e) {
       console.error('Voice connection failed:', e.message);
+      console.error('Current connection status:', connection.state.status);
       connection.destroy();
       return;
     }
