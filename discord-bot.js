@@ -32,6 +32,7 @@ const config = {
   volantaUsers: [
     { userId: "c8dce899-5b6b-4534-3fb9-08dca7f6f6ee", username: "Celestial" },
     { userId: "750e3239-b319-402d-902d-7a7723729382", username: "maxpilot95" },
+    { userId: "825dfa11-fbd8-4ce4-e5b9-08da9b1a2a09", username: "fsxaviator1" },
   ],
 };
 
