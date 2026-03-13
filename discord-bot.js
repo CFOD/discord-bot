@@ -26,9 +26,11 @@ const config = {
   emergencyChannelId: "1412039978057470042", // <-- Add channel ID to receive automatic emergency squawk alerts
   rageChannelId: "1412039978057470042", // <-- Channel to announce rage mode
   mapboxToken: process.env.MAPBOX_TOKEN,        // <-- Free token from https://mapbox.com (50,000 requests/month free)
-  volantaUserId: "c8dce899-5b6b-4534-3fb9-08dca7f6f6ee", // Volanta user ID
-  volantaUsername: "Celestial",
   volantaChannelId: "1412039978057470042",
+  volantaUsers: [
+    { userId: "c8dce899-5b6b-4534-3fb9-08dca7f6f6ee", username: "Celestial" },
+    { userId: "750e3239-b319-402d-902d-7a7723729382", username: "maxpilot95" },
+  ],
 };
 
 // ====== Aviation Constants ======
@@ -293,7 +295,7 @@ const rouletteCooldowns = new Map();
 const rouletteStreaks = new Map(); // userId -> { count, lastMutedAt }
 let rageModeActive = false;
 let emergencyFirstPoll = true;
-let lastVolantaFlightId = null;
+const lastVolantaFlightIds = new Map(); // userId -> last seen flight ID
 const MUTE_DURATIONS_MS = [1, 5, 10, 30, 60, 120, 240].map(m => m * 60 * 1000); // 1m 5m 10m 30m 1h 2h 4h
 const triviaCooldowns = new Map();
 const geminiUserCooldowns = new Map();
@@ -577,7 +579,7 @@ loadTriviaScores();
 loadMessageCounts();
 loadRouletteStreaks();
 loadKnownEmergencies();
-try { if (fs.existsSync(VOLANTA_LAST_FLIGHT_PATH)) { lastVolantaFlightId = JSON.parse(fs.readFileSync(VOLANTA_LAST_FLIGHT_PATH)).flightId; } } catch(e) {}
+try { if (fs.existsSync(VOLANTA_LAST_FLIGHT_PATH)) { const saved = JSON.parse(fs.readFileSync(VOLANTA_LAST_FLIGHT_PATH)); for (const [k, v] of Object.entries(saved)) lastVolantaFlightIds.set(k, v); } } catch(e) {}
 
 // ====== Ready / Command Registration ======
 client.once("ready", async () => {
@@ -699,7 +701,7 @@ client.once("ready", async () => {
   scheduleAutoPurge(client);
 
   // Start Volanta flight poller
-  if (config.volantaUserId && config.volantaChannelId) {
+  if (config.volantaUsers?.length && config.volantaChannelId) {
     setInterval(() => pollVolantaFlights(client), 5 * 60 * 1000);
     console.log('Volanta flight poller started.');
   }
@@ -2288,55 +2290,62 @@ const purgeMessages = async (interaction) => {
 
 // ====== Volanta Flight Poller ======
 async function pollVolantaFlights(client) {
-  try {
-    if (!config.volantaUserId || !config.volantaChannelId) return;
-    const res = await axios.get(
-      `https://api.volanta.app/api/v1/Flights/user/${config.volantaUserId}?page=1&pageSize=1`,
-      { headers: { Accept: 'application/json' }, timeout: 10000 }
-    );
-    const flights = res.data;
-    if (!flights || !flights.length) return;
-    const flight = flights[0].flight;
-    if (!flight || flight.state !== 'Completed') return;
-    if (flight.id === lastVolantaFlightId) return;
-    lastVolantaFlightId = flight.id;
-    try { fs.writeFileSync(VOLANTA_LAST_FLIGHT_PATH, JSON.stringify({ flightId: flight.id }, null, 2)); } catch(e) {}
-    const channel = client.guilds.cache.first()?.channels.cache.get(config.volantaChannelId);
-    if (!channel) return;
-    const origin = flight.originIcao || '???';
-    const dest = flight.destinationIcao || '???';
-    const originName = flight.origin?.name || origin;
-    const destName = flight.destination?.name || dest;
-    const aircraft = flight.aircraftIcao || 'Unknown';
-    const aircraftTitle = flight.aircraftTitle || aircraft;
-    const airline = flight.aircraft?.airline?.name || '';
-    const callsign = flight.callsign || flight.flightNumber || 'Unknown';
-    const distNm = flight.distanceFlownInNauticalMiles ? `${Math.round(flight.distanceFlownInNauticalMiles).toLocaleString()} nm` : 'Unknown';
-    const flightTimeSec = flight.realFlightTime || flight.effectiveFlightTime || 0;
-    const hrs = Math.floor(flightTimeSec / 3600);
-    const mins = Math.floor((flightTimeSec % 3600) / 60);
-    const duration = flightTimeSec ? `${hrs}h ${mins}m` : 'Unknown';
-    const landingRate = flight.landingRate ? `${Math.round(flight.landingRate)} fpm` : 'Unknown';
-    const fuelBurn = flight.fuelBurn ? `${Math.round(flight.fuelBurn).toLocaleString()} kg` : null;
-    const avgSpeed = (flight.distanceFlownInNauticalMiles && flightTimeSec) ? `${Math.round(flight.distanceFlownInNauticalMiles / (flightTimeSec / 3600))} kt` : null;
-    const embed = new EmbedBuilder()
-      .setTitle(`✈️ ${config.volantaUsername} just landed!`)
-      .setDescription(`**${callsign}** — ${originName} (${origin}) → ${destName} (${dest})`)
-      .addFields(
-        { name: '🛫 Route', value: `${origin} → ${dest}`, inline: true },
-        { name: '🛩️ Aircraft', value: `${aircraft}${airline ? ' · ' + airline : ''}`, inline: true },
-        { name: '⏱️ Duration', value: duration, inline: true },
-        { name: '📏 Distance', value: distNm, inline: true },
-        { name: '🛬 Landing Rate', value: landingRate, inline: true },
-        ...(fuelBurn ? [{ name: '⛽ Fuel Burn', value: fuelBurn, inline: true }] : []),
-        ...(avgSpeed ? [{ name: '💨 Avg Speed', value: avgSpeed, inline: true }] : []),
-      )
-      .setColor(0x5865F2)
-      .setTimestamp()
-      .setFooter({ text: `Volanta · ${aircraftTitle}` })
-      .setURL(`https://fly.volanta.app/profile/${config.volantaUsername}/flights`);
-    await channel.send({ embeds: [embed] });
-  } catch (e) { console.error('Volanta poll error:', e.message); }
+  if (!config.volantaUsers?.length || !config.volantaChannelId) return;
+  const channel = client.guilds.cache.first()?.channels.cache.get(config.volantaChannelId);
+  if (!channel) return;
+
+  for (const user of config.volantaUsers) {
+    try {
+      const res = await axios.get(
+        `https://api.volanta.app/api/v1/Flights/user/${user.userId}?page=1&pageSize=1`,
+        { headers: { Accept: 'application/json' }, timeout: 10000 }
+      );
+      const flights = res.data;
+      if (!flights || !flights.length) continue;
+      const flight = flights[0].flight;
+      if (!flight || flight.state !== 'Completed') continue;
+      if (flight.id === lastVolantaFlightIds.get(user.userId)) continue;
+      lastVolantaFlightIds.set(user.userId, flight.id);
+      try {
+        const toSave = Object.fromEntries(lastVolantaFlightIds);
+        fs.writeFileSync(VOLANTA_LAST_FLIGHT_PATH, JSON.stringify(toSave, null, 2));
+      } catch(e) {}
+
+      const origin = flight.originIcao || '???';
+      const dest = flight.destinationIcao || '???';
+      const originName = flight.origin?.name || origin;
+      const destName = flight.destination?.name || dest;
+      const aircraft = flight.aircraftIcao || 'Unknown';
+      const aircraftTitle = flight.aircraftTitle || aircraft;
+      const airline = flight.aircraft?.airline?.name || '';
+      const callsign = flight.callsign || flight.flightNumber || 'Unknown';
+      const distNm = flight.distanceFlownInNauticalMiles ? `${Math.round(flight.distanceFlownInNauticalMiles).toLocaleString()} nm` : 'Unknown';
+      const flightTimeSec = flight.realFlightTime || flight.effectiveFlightTime || 0;
+      const hrs = Math.floor(flightTimeSec / 3600);
+      const mins = Math.floor((flightTimeSec % 3600) / 60);
+      const duration = flightTimeSec ? `${hrs}h ${mins}m` : 'Unknown';
+      const landingRate = flight.landingRate ? `${Math.round(flight.landingRate)} fpm` : 'Unknown';
+      const fuelBurn = flight.fuelBurn ? `${Math.round(flight.fuelBurn).toLocaleString()} kg` : null;
+      const avgSpeed = (flight.distanceFlownInNauticalMiles && flightTimeSec) ? `${Math.round(flight.distanceFlownInNauticalMiles / (flightTimeSec / 3600))} kt` : null;
+      const embed = new EmbedBuilder()
+        .setTitle(`✈️ ${user.username} just landed!`)
+        .setDescription(`**${callsign}** — ${originName} (${origin}) → ${destName} (${dest})`)
+        .addFields(
+          { name: '🛫 Route', value: `${origin} → ${dest}`, inline: true },
+          { name: '🛩️ Aircraft', value: `${aircraft}${airline ? ' · ' + airline : ''}`, inline: true },
+          { name: '⏱️ Duration', value: duration, inline: true },
+          { name: '📏 Distance', value: distNm, inline: true },
+          { name: '🛬 Landing Rate', value: landingRate, inline: true },
+          ...(fuelBurn ? [{ name: '⛽ Fuel Burn', value: fuelBurn, inline: true }] : []),
+          ...(avgSpeed ? [{ name: '💨 Avg Speed', value: avgSpeed, inline: true }] : []),
+        )
+        .setColor(0x5865F2)
+        .setTimestamp()
+        .setFooter({ text: `Volanta · ${aircraftTitle}` })
+        .setURL(`https://fly.volanta.app/profile/${user.username}/flights`);
+      await channel.send({ embeds: [embed] });
+    } catch (e) { console.error(`Volanta poll error (${user.username}):`, e.message); }
+  }
 }
 
 // ====== Emergency Squawk Poller ======
