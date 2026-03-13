@@ -2136,6 +2136,20 @@ function scheduleAutoPurge(client) {
   next.setUTCHours(4, 30, 0, 0);
   if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
   const delay = next - now;
+  const warningDelay = delay - 5 * 60 * 1000;
+
+  // 5-minute warning
+  if (warningDelay > 0) {
+    setTimeout(async () => {
+      try {
+        const guild = client.guilds.cache.first();
+        const ch = guild?.channels.cache.get(config.emergencyChannelId);
+        if (!ch) return;
+        const purgeTs = Math.floor(next.getTime() / 1000);
+        await ch.send(`⚠️ **Bot auto-purge in 5 minutes** — all bot messages from the last 24 hours will be deleted <t:${purgeTs}:R> (<t:${purgeTs}:t>). Save anything you want to keep!`);
+      } catch {}
+    }, warningDelay);
+  }
 
   setTimeout(async () => {
     try {
