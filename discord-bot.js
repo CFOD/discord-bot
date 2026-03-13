@@ -251,6 +251,7 @@ const knownEmergencies = new Map();
 const pendingEmergencies = new Map(); // requires 2 consecutive polls before alerting
 const purgeChannelCache = new Map(); // channelId -> lastMessageId at time of last purge
 let rouletteTimeoutActive = false; // suppresses auto-remove when roulette times out the owner
+let autoRemoveTimeoutEnabled = false; // toggled via /toggleprotection
 
 // ====== Constants & Initial Setup ======
 const restartFile = "./restart_channel.txt";
@@ -602,6 +603,7 @@ client.once("ready", async () => {
     { name: "david", description: "Make retard speak" },
     { name: "log", description: "Big batty gyal good evening" },
     { name: "clearlog", description: "You look like your chicken need seasoning" },
+    { name: "toggleprotection", description: "Toggle the auto-remove timeout protection on or off." },
     {
       name: "unmute",
       description: "Unmutes a specific user in your voice channel.",
@@ -1051,6 +1053,12 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply({ content: "Error clearing log file.", ephemeral: true });
       }
       break;
+    case "toggleprotection": {
+      if (!hasPermission(interaction, config.ownerId)) return;
+      autoRemoveTimeoutEnabled = !autoRemoveTimeoutEnabled;
+      await interaction.reply({ content: `Timeout protection is now **${autoRemoveTimeoutEnabled ? 'ON' : 'OFF'}**.`, ephemeral: true });
+      break;
+    }
     case "setstorylength": {
       const lines = interaction.options.getInteger("lines");
       setGuildSettings(interaction.guildId, { storyLength: lines });
@@ -1863,6 +1871,7 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
   const wasTimedOut = !oldMember.isCommunicationDisabled();
   const isNowTimedOut = newMember.isCommunicationDisabled();
   if (wasTimedOut && isNowTimedOut) {
+    if (!autoRemoveTimeoutEnabled) return; // protection is off
     if (rouletteTimeoutActive) return; // roulette applied this timeout — leave it
     try {
       await newMember.timeout(null, 'Auto-removed: owner timeout protection');
