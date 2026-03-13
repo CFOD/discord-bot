@@ -694,6 +694,9 @@ client.once("ready", async () => {
   scheduleRageMode(client);
   console.log("Rage mode scheduler started.");
 
+  // Schedule daily auto-purge at 4:30am UTC
+  scheduleAutoPurge(client);
+
   // Start Volanta flight poller
   if (config.volantaUserId && config.volantaChannelId) {
     setInterval(() => pollVolantaFlights(client), 5 * 60 * 1000);
@@ -2029,6 +2032,58 @@ const restartBot = async (interaction) => {
     await interaction.reply({ content: "Failed to restart bot.", ephemeral: true });
   }
 };
+
+// ====== Auto Purge (daily 4:30am UTC) ======
+function scheduleAutoPurge(client) {
+  const now = new Date();
+  const next = new Date();
+  next.setUTCHours(4, 30, 0, 0);
+  if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
+  const delay = next - now;
+
+  setTimeout(async () => {
+    try {
+      const guild = client.guilds.cache.first();
+      if (!guild) return;
+
+      const channels = guild.channels.cache.filter(c => c.isTextBased() && c.viewable && !c.isThread());
+      let deleted = 0;
+
+      for (const [, ch] of channels) {
+        let lastId = null;
+        for (let page = 0; page < 10; page++) {
+          const options = { limit: 100 };
+          if (lastId) options.before = lastId;
+          let fetched;
+          try { fetched = await ch.messages.fetch(options); } catch { break; }
+          if (!fetched.size) break;
+          lastId = fetched.last().id;
+          const botMsgs = fetched.filter(m => m.author.id === client.user.id);
+          if (botMsgs.size > 0) {
+            try {
+              const result = await ch.bulkDelete(botMsgs, true);
+              deleted += result.size;
+            } catch {
+              for (const msg of botMsgs.values()) {
+                try { await msg.delete(); deleted++; } catch {}
+              }
+            }
+          }
+          if (fetched.size < 100) break;
+        }
+      }
+
+      console.log(`Auto-purge complete: deleted ${deleted} bot messages.`);
+    } catch (e) {
+      console.error('Auto-purge error:', e.message);
+    }
+
+    scheduleAutoPurge(client); // schedule next day
+  }, delay);
+
+  const nextStr = next.toUTCString();
+  console.log(`Auto-purge scheduled for ${nextStr}`);
+}
 
 // ====== Status / Purge ======
 const getStatus = async (interaction) => {
