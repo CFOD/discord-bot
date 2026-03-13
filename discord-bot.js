@@ -812,7 +812,7 @@ client.once("ready", async () => {
 
   // Start emergency squawk polling
   if (config.emergencyChannelId) {
-    setInterval(() => pollEmergencies(client), 60 * 1000);
+    setInterval(() => pollEmergencies(client), 5 * 60 * 1000);
     console.log("Emergency squawk polling started.");
   }
 
