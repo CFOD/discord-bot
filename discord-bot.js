@@ -1329,10 +1329,72 @@ client.on("interactionCreate", async (interaction) => {
           await targetMember.timeout(timeoutDuration, "Roulette victim");
           if (targetMember.id === config.ownerId) setTimeout(() => { rouletteTimeoutActive = false; }, 5000);
 
-          const mins = timeoutDuration / 60000;
-          const durationLabel = mins >= 60 ? `${mins / 60}h` : `${mins}m`;
+          const fmtMs = ms => { const m = ms / 60000; return m >= 60 ? `${m / 60}h` : `${m}m`; };
+          const durationLabel = fmtMs(timeoutDuration);
           const streakSuffix = currentStreak > 0 ? ` *(${currentStreak + 1}x in a row — streak penalty!)*` : '';
           await interaction.editReply({ content: `💥 **BANG!** <@${targetMember.id}> — enjoy your **${durationLabel}** of silence.${streakSuffix}` });
+
+          // 4% chance of double or nothing (not during rage mode)
+          if (!rageModeActive && Math.random() < 0.04) {
+            try {
+              const tRes = await axios.get('https://opentdb.com/api.php?amount=1&type=multiple', { timeout: 5000 });
+              const q = tRes.data.results?.[0];
+              if (q) {
+                const decode = s => s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#039;/g, "'");
+                const correct = decode(q.correct_answer);
+                const answers = [...q.incorrect_answers.map(decode), correct].sort(() => Math.random() - 0.5);
+                const doubleDurationLabel = fmtMs(timeoutDuration * 2);
+
+                const row = new ActionRowBuilder().addComponents(
+                  answers.map((ans, i) => new ButtonBuilder()
+                    .setCustomId(`don_${i}_${interaction.id}`)
+                    .setLabel(ans)
+                    .setStyle(ButtonStyle.Primary)
+                  )
+                );
+
+                const donMsg = await interaction.followUp({
+                  ephemeral: true,
+                  content: `🎲 **DOUBLE OR NOTHING!**
+
+Answer correctly → <@${targetMember.id}>'s timeout doubles to **${doubleDurationLabel}**.
+Answer wrong → YOU get **${durationLabel}**.
+
+**${decode(q.question)}**
+
+*You have 30 seconds.*`,
+                  components: [row],
+                });
+
+                try {
+                  const btn = await donMsg.awaitMessageComponent({
+                    filter: i => i.user.id === interaction.user.id && i.customId.startsWith(`don_`) && i.customId.endsWith(`_${interaction.id}`),
+                    time: 30000,
+                  });
+
+                  const chosen = answers[parseInt(btn.customId.split('_')[1])];
+                  if (chosen === correct) {
+                    if (targetMember.id === config.ownerId) rouletteTimeoutActive = true;
+                    await targetMember.timeout(timeoutDuration * 2, 'Roulette: double or nothing — spinner correct');
+                    if (targetMember.id === config.ownerId) setTimeout(() => { rouletteTimeoutActive = false; }, 5000);
+                    await btn.update({ content: `✅ Correct! <@${targetMember.id}>'s timeout has been doubled to **${doubleDurationLabel}**.`, components: [] });
+                  } else {
+                    const spinnerMember = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+                    if (spinnerMember) {
+                      if (interaction.user.id === config.ownerId) rouletteTimeoutActive = true;
+                      await spinnerMember.timeout(timeoutDuration, 'Roulette: double or nothing — spinner wrong');
+                      if (interaction.user.id === config.ownerId) setTimeout(() => { rouletteTimeoutActive = false; }, 5000);
+                    }
+                    await btn.update({ content: `❌ Wrong! The correct answer was **${correct}**. You get **${durationLabel}** of silence.`, components: [] });
+                  }
+                } catch {
+                  await donMsg.edit({ content: `⏱️ Time's up — double or nothing expired.`, components: [] }).catch(() => {});
+                }
+              }
+            } catch (e) {
+              console.error('Double or nothing error:', e.message);
+            }
+          }
         } catch (error) {
           console.error("Roulette timeout failed:", error);
           await interaction.editReply({ content: `💥 **BANG!** The roulette landed on <@${targetMember.id}>... but I couldn't time them out. Count yourself lucky.` });
