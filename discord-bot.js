@@ -2329,6 +2329,7 @@ const getStatus = async (interaction) => {
 };
 
 const purgeMessages = async (interaction) => {
+  purgeChannelCache.clear(); // always do a full scan on manual purge
   if (!hasPermission(interaction, config.ownerId)) return;
   await interaction.deferReply({ ephemeral: true });
 
