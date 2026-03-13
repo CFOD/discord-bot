@@ -3,6 +3,7 @@ const { Client, GatewayIntentBits, REST, Routes, Partials, ChannelType, ActionRo
 const fs = require("fs");
 const path = require("path");
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, StreamType, getVoiceConnection, entersState, VoiceConnectionStatus } = require("@discordjs/voice");
+const { spawn } = require("child_process");
 const { exec } = require("child_process");
 const axios = require("axios");
 let Jimp = null;
@@ -494,7 +495,9 @@ async function playAdhan(client, prayerName) {
     }
 
     const player = createAudioPlayer();
-    const resource = createAudioResource(ADHAN_PATH, { inputType: StreamType.Arbitrary });
+    const ffmpegProc = spawn('ffmpeg', ['-i', ADHAN_PATH, '-f', 's16le', '-ar', '48000', '-ac', '2', 'pipe:1'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    ffmpegProc.stderr.on('data', d => console.log('ffmpeg stderr:', d.toString().slice(-100)));
+    const resource = createAudioResource(ffmpegProc.stdout, { inputType: StreamType.Raw });
     connection.subscribe(player);
     player.play(resource);
 
