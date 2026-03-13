@@ -11,12 +11,14 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@discordjs/opus": "^0.10.0",
     "@discordjs/voice": "^0.18.0",
     "axios": "^1.11.0",
     "cheerio": "^1.1.2",
     "discord.js": "^14.21.0",
     "h3-js": "^4.4.0",
     "node-fetch": "^3.3.2",
-    "puppeteer": "^24.17.0"
+    "puppeteer": "^24.17.0",
+    "sodium-native": "^5.1.0"
   }
 }

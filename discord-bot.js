@@ -2,6 +2,7 @@
 const { Client, GatewayIntentBits, REST, Routes, Partials, ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, AttachmentBuilder } = require("discord.js");
 const fs = require("fs");
 const path = require("path");
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, getVoiceConnection, entersState, VoiceConnectionStatus } = require("@discordjs/voice");
 const { exec } = require("child_process");
 const axios = require("axios");
 let Jimp = null;
@@ -402,6 +403,7 @@ const client = new Client({
     GatewayIntentBits.DirectMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildVoiceStates,
   ],
   partials: [Partials.Channel],
 });
@@ -425,6 +427,89 @@ function scheduleRandomMessage(guild) {
     await sendRandomMessageToSpecificChannel(guild);
     scheduleRandomMessage(guild);
   }, delay);
+}
+
+// ====== Islamic Prayer Time Scheduler ======
+const ADHAN_PATH = path.join(__dirname, 'adhan.mp3');
+const PRAYER_NAMES = ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'];
+
+async function schedulePrayerTimes(client) {
+  try {
+    const res = await axios.get('https://api.aladhan.com/v1/timingsByCity?city=London&country=UK&method=2', { timeout: 10000 });
+    const timings = res.data?.data?.timings;
+    if (!timings) throw new Error('No timings in response');
+
+    const now = new Date();
+    for (const prayer of PRAYER_NAMES) {
+      const [h, m] = timings[prayer].split(':').map(Number);
+      const prayerTime = new Date();
+      prayerTime.setHours(h, m, 0, 0);
+      const delay = prayerTime - now;
+      if (delay > 0) {
+        setTimeout(() => playAdhan(client, prayer), delay);
+        console.log(`Adhan scheduled for ${prayer} at ${timings[prayer]}`);
+      }
+    }
+
+    // Reschedule for tomorrow at midnight
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(0, 1, 0, 0);
+    setTimeout(() => schedulePrayerTimes(client), tomorrow - now);
+    console.log('Prayer times loaded for today.');
+  } catch (e) {
+    console.error('Prayer scheduler error:', e.message);
+    // Retry in 1 hour if something went wrong
+    setTimeout(() => schedulePrayerTimes(client), 60 * 60 * 1000);
+  }
+}
+
+async function playAdhan(client, prayerName) {
+  try {
+    const guild = client.guilds.cache.first();
+    if (!guild) return;
+
+    // Find a populated voice channel
+    const voiceChannel = guild.channels.cache.find(
+      ch => ch.type === ChannelType.GuildVoice && ch.members.size > 0
+    );
+    if (!voiceChannel) {
+      console.log(`Adhan: no occupied voice channels for ${prayerName}`);
+      return;
+    }
+
+    const connection = joinVoiceChannel({
+      channelId: voiceChannel.id,
+      guildId: guild.id,
+      adapterCreator: guild.voiceAdapterCreator,
+    });
+
+    try {
+      await entersState(connection, VoiceConnectionStatus.Ready, 10_000);
+    } catch {
+      connection.destroy();
+      return;
+    }
+
+    const player = createAudioPlayer();
+    const resource = createAudioResource(ADHAN_PATH);
+    connection.subscribe(player);
+    player.play(resource);
+
+    player.on(AudioPlayerStatus.Idle, () => {
+      connection.destroy();
+      console.log(`Adhan finished for ${prayerName}`);
+    });
+
+    player.on('error', err => {
+      console.error('Adhan player error:', err.message);
+      connection.destroy();
+    });
+
+    console.log(`Playing adhan for ${prayerName} in ${voiceChannel.name}`);
+  } catch (e) {
+    console.error('Adhan playback error:', e.message);
+  }
 }
 
 function scheduleRageMode(client) {
@@ -725,6 +810,9 @@ client.once("ready", async () => {
     setInterval(() => pollEmergencies(client), 60 * 1000);
     console.log("Emergency squawk polling started.");
   }
+
+  // Start Islamic prayer time Adhan scheduler
+  schedulePrayerTimes(client);
 
   const rest = new REST({ version: "10" }).setToken(token);
   try {
