@@ -2049,15 +2049,19 @@ function scheduleAutoPurge(client) {
       const channels = guild.channels.cache.filter(c => c.isTextBased() && c.viewable && !c.isThread());
       let deleted = 0;
 
+      // Only look at messages from the last 24 hours using Discord snowflake IDs
+      const DISCORD_EPOCH = 1420070400000n;
+      const cutoff = BigInt(Date.now() - 24 * 60 * 60 * 1000);
+      const afterSnowflake = ((cutoff - DISCORD_EPOCH) << 22n).toString();
+
       for (const [, ch] of channels) {
-        let lastId = null;
-        for (let page = 0; page < 50; page++) {
-          const options = { limit: 100 };
-          if (lastId) options.before = lastId;
+        let afterId = afterSnowflake;
+        while (true) {
           let fetched;
-          try { fetched = await ch.messages.fetch(options); } catch { break; }
+          try { fetched = await ch.messages.fetch({ limit: 100, after: afterId }); } catch { break; }
           if (!fetched.size) break;
-          lastId = fetched.last().id;
+          // after= returns ascending order; advance cursor to last message
+          afterId = [...fetched.keys()].sort().at(-1);
           const botMsgs = fetched.filter(m => m.author.id === client.user.id);
           if (botMsgs.size > 0) {
             try {
