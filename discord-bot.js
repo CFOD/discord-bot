@@ -466,18 +466,21 @@ async function schedulePrayerTimes(client) {
 }
 
 async function playAdhan(client, prayerName) {
+  console.log(`playAdhan called for ${prayerName}`);
   try {
     const guild = client.guilds.cache.first();
+    console.log(`Guild: ${guild ? guild.name : 'NOT FOUND'}`);
     if (!guild) return;
 
     // Find a populated voice channel
-    const voiceChannel = guild.channels.cache.find(
-      ch => ch.type === ChannelType.GuildVoice && ch.members.size > 0
-    );
+    const allVoice = guild.channels.cache.filter(ch => ch.type === ChannelType.GuildVoice);
+    console.log(`Voice channels: ${allVoice.size}, occupied: ${allVoice.filter(ch => ch.members.size > 0).size}`);
+    const voiceChannel = allVoice.find(ch => ch.members.size > 0);
     if (!voiceChannel) {
       console.log(`Adhan: no occupied voice channels for ${prayerName}`);
       return;
     }
+    console.log(`Joining voice channel: ${voiceChannel.name}`);
 
     const connection = joinVoiceChannel({
       channelId: voiceChannel.id,
@@ -489,7 +492,9 @@ async function playAdhan(client, prayerName) {
 
     try {
       await entersState(connection, VoiceConnectionStatus.Ready, 10_000);
-    } catch {
+      console.log('Voice connection ready');
+    } catch (e) {
+      console.error('Voice connection failed:', e.message);
       connection.destroy();
       return;
     }
