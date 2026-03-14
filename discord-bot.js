@@ -830,8 +830,8 @@ client.once("ready", async () => {
     console.log('Volanta flight poller started.');
   }
 
-  // Start emergency squawk polling
-  if (config.emergencyChannelId) {
+  // Start emergency squawk polling (disabled - re-enable by removing `false &&`)
+  if (false && config.emergencyChannelId) {
     setInterval(() => pollEmergencies(client), 5 * 60 * 1000);
     console.log("Emergency squawk polling started.");
   }
