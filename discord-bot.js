@@ -278,6 +278,14 @@ function saveGoogleUsage() { fs.writeFileSync(GOOGLE_USAGE_PATH, JSON.stringify(
 const GOOGLE_MONTHLY_LIMIT = 750;
 let geoDaily = { date: '', count: 0 };
 const GEO_DAILY_LIMIT = 70;
+const SPASTIC_VOTES_PATH = path.join(__dirname, 'spastic-votes.json');
+const SPASTIC_WINS_PATH = path.join(__dirname, 'spastic-wins.json');
+let spasticVotes = { date: '', votes: {} };
+let spasticWins = {};
+try { spasticVotes = JSON.parse(fs.readFileSync(SPASTIC_VOTES_PATH, 'utf8')); } catch {}
+try { spasticWins = JSON.parse(fs.readFileSync(SPASTIC_WINS_PATH, 'utf8')); } catch {}
+function saveSpasticVotes() { fs.writeFileSync(SPASTIC_VOTES_PATH, JSON.stringify(spasticVotes, null, 2)); }
+function saveSpasticWins() { fs.writeFileSync(SPASTIC_WINS_PATH, JSON.stringify(spasticWins, null, 2)); }
 function checkGoogleQuota(n = 1) {
   const month = new Date().toISOString().slice(0, 7);
   if (googleUsage.month !== month) googleUsage = { month, count: 0 };
@@ -883,6 +891,20 @@ client.once("ready", async () => {
         { name: "leaderboard", description: "Show the all-time server leaderboard", type: 1 }
       ]
     },
+    {
+      name: "spastic",
+      description: "Vote for Spastic of the Day",
+      options: [
+        {
+          name: "vote",
+          description: "Nominate today's Spastic of the Day",
+          type: 1,
+          options: [{ name: "user", description: "Who do you nominate?", type: 6, required: true }]
+        },
+        { name: "results", description: "See today's current vote standings", type: 1 },
+        { name: "leaderboard", description: "All-time Spastic of the Day wins", type: 1 }
+      ]
+    },
     { name: "status", description: "Shows the current server status" },
     { name: "help", description: "Lists all available commands" },
     { name: "josep", description: "Make the fat Greek speak" },
@@ -1244,6 +1266,9 @@ client.on("interactionCreate", async (interaction) => {
       break;
     case "scout":
       await handleGeoRig(interaction);
+      break;
+    case "spastic":
+      await handleSpastic(interaction);
       break;
     case "geoguessr":
       await handleGeoguessr(interaction);
@@ -2502,6 +2527,82 @@ function scheduleAutoPurge(client) {
 }
 
 // ====== Status / Purge ======
+const handleSpastic = async (interaction) => {
+  const sub = interaction.options.getSubcommand();
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Auto-tally previous day if date has changed and votes exist
+  if (spasticVotes.date && spasticVotes.date !== today && Object.keys(spasticVotes.votes).length > 0) {
+    const counts = {};
+    for (const votedId of Object.values(spasticVotes.votes)) {
+      counts[votedId] = (counts[votedId] || 0) + 1;
+    }
+    const [winnerId, winCount] = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+    if (!spasticWins[winnerId]) spasticWins[winnerId] = 0;
+    spasticWins[winnerId]++;
+    saveSpasticWins();
+    spasticVotes = { date: today, votes: {} };
+    saveSpasticVotes();
+    await interaction.channel.send(`🏆 **Spastic of the Day** for ${spasticVotes.date || today} was <@${winnerId}> with ${winCount} vote${winCount === 1 ? '' : 's'}!`);
+  } else if (spasticVotes.date !== today) {
+    spasticVotes = { date: today, votes: {} };
+  }
+
+  if (sub === 'vote') {
+    const target = interaction.options.getUser('user');
+    if (target.id === interaction.user.id) {
+      return interaction.reply({ content: "You can't vote for yourself.", ephemeral: true });
+    }
+    if (target.bot) {
+      return interaction.reply({ content: "Bots can't be Spastic of the Day.", ephemeral: true });
+    }
+    const already = spasticVotes.votes[interaction.user.id];
+    spasticVotes.votes[interaction.user.id] = target.id;
+    saveSpasticVotes();
+    const msg = already
+      ? `Vote updated: you're now voting for <@${target.id}> as today's Spastic.`
+      : `Voted! You nominated <@${target.id}> as today's Spastic of the Day.`;
+    return interaction.reply({ content: msg, ephemeral: true });
+
+  } else if (sub === 'results') {
+    if (Object.keys(spasticVotes.votes).length === 0) {
+      return interaction.reply({ content: 'No votes yet today! Use `/spastic vote` to nominate someone.', ephemeral: true });
+    }
+    const counts = {};
+    for (const votedId of Object.values(spasticVotes.votes)) {
+      counts[votedId] = (counts[votedId] || 0) + 1;
+    }
+    const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    const medals = ['🥇', '🥈', '🥉'];
+    const lines = sorted.map(([id, n], i) =>
+      `${medals[i] || `${i+1}.`} <@${id}> — **${n} vote${n === 1 ? '' : 's'}**`
+    ).join('\n');
+    const embed = new EmbedBuilder()
+      .setTitle(`🤡 Spastic of the Day — ${today}`)
+      .setDescription(lines)
+      .setColor(0xFF6B35)
+      .setFooter({ text: `${Object.keys(spasticVotes.votes).length} votes cast` });
+    return interaction.reply({ embeds: [embed] });
+
+  } else if (sub === 'leaderboard') {
+    const entries = Object.entries(spasticWins).filter(([, n]) => n > 0);
+    if (entries.length === 0) {
+      return interaction.reply({ content: 'No winners yet!', ephemeral: true });
+    }
+    const sorted = entries.sort((a, b) => b[1] - a[1]).slice(0, 10);
+    const medals = ['🥇', '🥈', '🥉'];
+    const lines = sorted.map(([id, n], i) =>
+      `${medals[i] || `**${i+1}.**`} <@${id}> — **${n} day${n === 1 ? '' : 's'}**`
+    ).join('\n');
+    const embed = new EmbedBuilder()
+      .setTitle('🤡 Spastic of the Day — All-Time Leaderboard')
+      .setDescription(lines)
+      .setColor(0xFF6B35)
+      .setFooter({ text: 'Number of days voted #1' });
+    return interaction.reply({ embeds: [embed] });
+  }
+};
+
 const getStatus = async (interaction) => {
   exec("pm2 jlist", async (err, stdout, stderr) => {
     if (err || stderr) {
