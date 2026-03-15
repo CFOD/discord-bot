@@ -2634,6 +2634,18 @@ async function geocodeGuess(query) {
   return null;
 }
 
+async function geocodeNominatim(query) {
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`;
+    const res = await axios.get(url, { headers: { 'User-Agent': 'discord-geoguessr-bot/1.0' } });
+    if (res.data.length > 0) {
+      const r = res.data[0];
+      return { lat: parseFloat(r.lat), lng: parseFloat(r.lon), address: r.display_name };
+    }
+  } catch {}
+  return null;
+}
+
 async function revealGeoGuessr(channel, game) {
   clearTimeout(game.timeout);
   geoguessrGames.delete(channel.id);
@@ -2738,7 +2750,7 @@ async function handleGeoguessr(interaction) {
     await interaction.deferReply({ ephemeral: true });
 
     const query = interaction.options.getString('location');
-    const geocoded = await geocodeGuess(query);
+    const geocoded = await geocodeNominatim(query);
     if (!geocoded) {
       return interaction.editReply("Couldn't find that location. Try being more specific.");
     }
