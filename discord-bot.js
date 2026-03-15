@@ -2668,16 +2668,17 @@ async function handleGeoguessr(interaction) {
     }
     if (!attachment) return interaction.editReply('Could not find a location with Street View coverage. Try again.');
 
+    const revealAt = Math.floor((Date.now() + 60 * 1000) / 1000);
     const embed = new EmbedBuilder()
       .setTitle('🌍 Where in the world is this?')
-      .setDescription('Use `/geoguessr guess` to submit your location guess!\nThe answer will be revealed in **3 minutes** or when someone uses `/geoguessr reveal`.')
+      .setDescription(`Use \`/geoguessr guess\` to submit your location guess!\nRevealing <t:${revealAt}:R> or when someone uses \`/geoguessr reveal\`.`)
       .setImage('attachment://streetview.jpg')
       .setColor(0x1A73E8);
 
     const timeout = setTimeout(() => {
       const game = geoguessrGames.get(channel.id);
       if (game) revealGeoGuessr(channel, game);
-    }, 3 * 60 * 1000);
+    }, 60 * 1000);
 
     geoguessrGames.set(channel.id, { lat, lng, country, guesses: new Map(), timeout });
     await interaction.editReply({ embeds: [embed], files: [attachment] });
