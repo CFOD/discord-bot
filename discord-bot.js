@@ -2589,6 +2589,7 @@ async function geocodeGuess(query) {
   try {
     const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${process.env.GOOGLE_API_KEY}`;
     const res = await axios.get(url);
+    if (res.data.status !== 'OK') console.error('[Geocode] status:', res.data.status, res.data.error_message || '');
     if (res.data.status === 'OK' && res.data.results.length > 0) {
       const loc = res.data.results[0].geometry.location;
       return { lat: loc.lat, lng: loc.lng, address: res.data.results[0].formatted_address };
