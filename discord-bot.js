@@ -1017,6 +1017,7 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     case "unmute": {
+        if (!interaction.guild) return interaction.reply({ content: "This command can only be used in a server.", ephemeral: true });
         if (!hasPermission(interaction, config.ownerId)) return;
 
         const userToUnmute = interaction.options.getUser("user");
