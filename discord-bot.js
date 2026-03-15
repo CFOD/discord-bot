@@ -2635,18 +2635,23 @@ async function handleGeoguessr(interaction) {
     }
     await interaction.deferReply();
 
-    const location = GEO_LOCATIONS[Math.floor(Math.random() * GEO_LOCATIONS.length)];
-    const { lat, lng, country } = location;
-    const heading = Math.floor(Math.random() * 360);
-    const svUrl = `https://maps.googleapis.com/maps/api/streetview?size=640x400&location=${lat},${lng}&fov=90&heading=${heading}&pitch=0&key=${process.env.GOOGLE_API_KEY}`;
-
-    let attachment;
-    try {
-      const res = await axios.get(svUrl, { responseType: 'arraybuffer' });
-      attachment = new AttachmentBuilder(Buffer.from(res.data), { name: 'streetview.jpg' });
-    } catch {
-      return interaction.editReply('Failed to fetch street view image. Try again.');
+    // Pick a random location that has Street View coverage
+    let location, lat, lng, country, attachment;
+    const shuffled = [...GEO_LOCATIONS].sort(() => Math.random() - 0.5);
+    for (const candidate of shuffled) {
+      try {
+        const meta = await axios.get(`https://maps.googleapis.com/maps/api/streetview/metadata?location=${candidate.lat},${candidate.lng}&key=${process.env.GOOGLE_API_KEY}`);
+        if (meta.data.status !== 'OK') continue;
+        const heading = Math.floor(Math.random() * 360);
+        const svUrl = `https://maps.googleapis.com/maps/api/streetview?size=640x400&location=${candidate.lat},${candidate.lng}&fov=90&heading=${heading}&pitch=0&key=${process.env.GOOGLE_API_KEY}`;
+        const res = await axios.get(svUrl, { responseType: 'arraybuffer' });
+        location = candidate;
+        lat = candidate.lat; lng = candidate.lng; country = candidate.country;
+        attachment = new AttachmentBuilder(Buffer.from(res.data), { name: 'streetview.jpg' });
+        break;
+      } catch { continue; }
     }
+    if (!attachment) return interaction.editReply('Could not find a location with Street View coverage. Try again.');
 
     const embed = new EmbedBuilder()
       .setTitle('🌍 Where in the world is this?')
