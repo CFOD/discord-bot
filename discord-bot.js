@@ -2520,7 +2520,9 @@ const getStatus = async (interaction) => {
           return `${displayName} - Status: ${status} - Uptime: ${uptime}`;
         })
         .join("\n");
-      await interaction.editReply(`\`\`\`${statusMessage}\`\`\``);
+      const usageMonth = googleUsage.month || 'N/A';
+      const usageCount = googleUsage.count || 0;
+      await interaction.editReply(`\`\`\`${statusMessage}\`\`\`\n📊 Google API: ${usageCount}/${GOOGLE_MONTHLY_LIMIT} requests this month (${usageMonth})`);
     } catch (error) {
       console.error("Error parsing status:", error);
       await interaction.editReply("Error parsing server status.");
