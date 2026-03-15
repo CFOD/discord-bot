@@ -1020,6 +1020,7 @@ client.once("ready", async () => {
 
   // Start Islamic prayer time Adhan scheduler
   schedulePrayerTimes(client);
+  scheduleSpasticResults(client);
 
   const rest = new REST({ version: "10" }).setToken(token);
   try {
@@ -2527,6 +2528,50 @@ function scheduleAutoPurge(client) {
 }
 
 // ====== Status / Purge ======
+async function postSpasticResults(client) {
+  const today = new Date().toISOString().slice(0, 10);
+  if (Object.keys(spasticVotes.votes).length === 0) return;
+  const counts = {};
+  for (const votedId of Object.values(spasticVotes.votes)) {
+    counts[votedId] = (counts[votedId] || 0) + 1;
+  }
+  const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  const [winnerId, winCount] = sorted[0];
+  if (!spasticWins[winnerId]) spasticWins[winnerId] = 0;
+  spasticWins[winnerId]++;
+  saveSpasticWins();
+  spasticVotes = { date: today, votes: {} };
+  saveSpasticVotes();
+  const medals = ['🥇', '🥈', '🥉'];
+  const lines = sorted.map(([id, n], i) =>
+    `${medals[i] || `${i+1}.`} <@${id}> — **${n} vote${n === 1 ? '' : 's'}**`
+  ).join('\n');
+  const embed = new EmbedBuilder()
+    .setTitle(`🤡 Spastic of the Day — ${today}`)
+    .setDescription(lines)
+    .setColor(0xFF6B35)
+    .setFooter({ text: `${Object.keys(spasticVotes.votes).length || Object.keys(counts).length} votes cast` });
+  try {
+    const guild = await client.guilds.fetch(config.relayServerId);
+    const channel = await guild.channels.fetch(config.relayChannelId);
+    await channel.send({ content: `🏆 **Spastic of the Day** is <@${winnerId}>!`, embeds: [embed] });
+  } catch (e) { console.error('[Spastic] Failed to post results:', e.message); }
+}
+
+function scheduleSpasticResults(client) {
+  const now = new Date();
+  const londonNow = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/London' }));
+  const londonTarget = new Date(londonNow);
+  londonTarget.setHours(20, 0, 0, 0);
+  if (londonNow >= londonTarget) londonTarget.setDate(londonTarget.getDate() + 1);
+  const msUntil = londonTarget - londonNow;
+  setTimeout(async () => {
+    await postSpasticResults(client);
+    scheduleSpasticResults(client);
+  }, msUntil);
+  console.log(`[Spastic] Results scheduled in ${Math.round(msUntil/60000)}m`);
+}
+
 const handleSpastic = async (interaction) => {
   const sub = interaction.options.getSubcommand();
   const today = new Date().toISOString().slice(0, 10);
@@ -2559,14 +2604,12 @@ const handleSpastic = async (interaction) => {
     const already = spasticVotes.votes[interaction.user.id];
     spasticVotes.votes[interaction.user.id] = target.id;
     saveSpasticVotes();
-    const msg = already
-      ? `Vote updated: you're now voting for <@${target.id}> as today's Spastic.`
-      : `Voted! You nominated <@${target.id}> as today's Spastic of the Day.`;
-    return interaction.reply({ content: msg, ephemeral: true });
+    const action = already ? 'changed their vote' : 'voted';
+    return interaction.reply({ content: `🗳️ **${interaction.user.username}** ${action} for Spastic of the Day!` });
 
   } else if (sub === 'results') {
     if (Object.keys(spasticVotes.votes).length === 0) {
-      return interaction.reply({ content: 'No votes yet today! Use `/spastic vote` to nominate someone.', ephemeral: true });
+      return interaction.reply({ content: 'No votes yet today! Use `/spastic vote` to nominate someone.' });
     }
     const counts = {};
     for (const votedId of Object.values(spasticVotes.votes)) {
@@ -2587,7 +2630,7 @@ const handleSpastic = async (interaction) => {
   } else if (sub === 'leaderboard') {
     const entries = Object.entries(spasticWins).filter(([, n]) => n > 0);
     if (entries.length === 0) {
-      return interaction.reply({ content: 'No winners yet!', ephemeral: true });
+      return interaction.reply({ content: 'No winners yet!' });
     }
     const sorted = entries.sort((a, b) => b[1] - a[1]).slice(0, 10);
     const medals = ['🥇', '🥈', '🥉'];
