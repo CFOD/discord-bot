@@ -1017,7 +1017,6 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     case "unmute": {
-        if (!interaction.guild) return interaction.reply({ content: "This command can only be used in a server.", ephemeral: true });
         if (!hasPermission(interaction, config.ownerId)) return;
 
         const userToUnmute = interaction.options.getUser("user");
@@ -1025,7 +1024,8 @@ client.on("interactionCreate", async (interaction) => {
              return interaction.reply({ content: "Please provide a valid user to unmute.", ephemeral: true });
         }
 
-        const memberToUnmute = await interaction.guild.members.fetch(userToUnmute.id).catch(() => null);
+        const guild = interaction.guild ?? await interaction.client.guilds.fetch(config.relayServerId);
+        const memberToUnmute = await guild.members.fetch(userToUnmute.id).catch(() => null);
 
         if (!memberToUnmute) {
             return interaction.reply({ content: "Could not find that user in this server.", ephemeral: true });
