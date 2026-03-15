@@ -276,6 +276,8 @@ let googleUsage = { month: '', count: 0 };
 try { googleUsage = JSON.parse(fs.readFileSync(GOOGLE_USAGE_PATH, 'utf8')); } catch {}
 function saveGoogleUsage() { fs.writeFileSync(GOOGLE_USAGE_PATH, JSON.stringify(googleUsage, null, 2)); }
 const GOOGLE_MONTHLY_LIMIT = 750;
+let geoDaily = { date: '', count: 0 };
+const GEO_DAILY_LIMIT = 70;
 function checkGoogleQuota(n = 1) {
   const month = new Date().toISOString().slice(0, 7);
   if (googleUsage.month !== month) googleUsage = { month, count: 0 };
@@ -2781,6 +2783,9 @@ const handleGeoRig = async (interaction) => {
   if (geoguessrGames.size > 0) {
     return interaction.reply({ content: 'A game is already running. Reveal it first.', ephemeral: true });
   }
+  const today = new Date().toISOString().slice(0, 10);
+  if (geoDaily.date !== today) geoDaily = { date: today, count: 0 };
+  if (geoDaily.count >= GEO_DAILY_LIMIT) return interaction.reply({ content: `Daily game limit reached (${geoDaily.count}/${GEO_DAILY_LIMIT}). Try again tomorrow.`, ephemeral: true });
   await interaction.deferReply({ ephemeral: true });
 
   const query = interaction.options.getString('query');
@@ -2818,6 +2823,7 @@ Revealing <t:${revealAt}:R> or when someone uses \`/geoguessr reveal\`.`)
     if (game) revealGeoGuessr(channel, game);
   }, 60 * 1000);
 
+  geoDaily.count++;
   geoguessrGames.set(channel.id, { lat, lng, country: geocoded.address, guesses: new Map(), timeout });
   await channel.send({ embeds: [embed], files: [attachment] });
   await interaction.editReply(`Game started at **${geocoded.address}**. You know where it is.`);
