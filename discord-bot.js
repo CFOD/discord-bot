@@ -2643,8 +2643,8 @@ async function handleGeoguessr(interaction) {
   const channel = interaction.channel;
 
   if (sub === 'start') {
-    if (geoguessrGames.has(channel.id)) {
-      return interaction.reply({ content: 'A game is already running here. Use `/geoguessr reveal` to end it first.', ephemeral: true });
+    if (geoguessrGames.size > 0) {
+      return interaction.reply({ content: 'A game is already running in the server. Use `/geoguessr reveal` to end it first.', ephemeral: true });
     }
     await interaction.deferReply();
 
