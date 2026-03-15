@@ -996,10 +996,7 @@ client.on("interactionCreate", async (interaction) => {
              return interaction.reply({ content: "Please provide a valid user.", ephemeral: true });
         }
 
-        const guild = interaction.guild || client.guilds.cache.first();
-        if (!guild) {
-            return interaction.reply({ content: "Could not find the server.", ephemeral: true });
-        }
+        const guild = interaction.guild ?? await interaction.client.guilds.fetch(config.relayServerId);
 
         const memberToUntimeout = await guild.members.fetch(userToUntimeout.id).catch(() => null);
         if (!memberToUntimeout) {
