@@ -723,6 +723,7 @@ client.once("ready", async () => {
         ],
       }],
     },
+    { name: "quickpurge", description: "Quickly delete recent bot messages (last 100 msgs per channel)." },
     { name: "status", description: "Shows the current server status" },
     { name: "help", description: "Lists all available commands" },
     { name: "josep", description: "Make the fat Greek speak" },
@@ -1061,6 +1062,10 @@ client.on("interactionCreate", async (interaction) => {
     case "purge":
       if (!hasPermission(interaction, config.ownerId)) return;
       await purgeMessages(interaction);
+      break;
+    case "quickpurge":
+      if (!hasPermission(interaction, config.ownerId)) return;
+      await quickPurgeMessages(interaction);
       break;
     case "sepsearch": {
       const query = interaction.options.getString("query").toLowerCase();
@@ -2416,6 +2421,36 @@ const purgeMessages = async (interaction) => {
     console.error('Error purging messages:', error);
     await interaction.editReply('An error occurred while purging messages.');
   }
+};
+
+const quickPurgeMessages = async (interaction) => {
+  await interaction.deferReply({ ephemeral: true });
+
+  const guild = interaction.guild ?? await interaction.client.guilds.fetch(config.relayServerId);
+  const channels = [...guild.channels.cache.filter(c =>
+    c.isTextBased() && c.viewable && !c.isThread()
+  ).values()];
+
+  let deleted = 0;
+
+  for (const ch of channels) {
+    let fetched;
+    try { fetched = await ch.messages.fetch({ limit: 100 }); } catch { continue; }
+    const botMsgs = fetched.filter(m => m.author.id === client.user.id);
+    if (!botMsgs.size) continue;
+    try {
+      const result = await ch.bulkDelete(botMsgs, true);
+      deleted += result.size;
+    } catch {
+      for (const msg of botMsgs.values()) {
+        try { await msg.delete(); deleted++; } catch {}
+      }
+    }
+  }
+
+  await interaction.editReply(deleted > 0
+    ? `✅ Quick purge done — deleted **${deleted}** bot messages.`
+    : `✅ Quick purge done — no recent bot messages found.`);
 };
 
 
