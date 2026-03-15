@@ -264,6 +264,11 @@ let geoScores = {}; // userId -> total points
 try { geoScores = JSON.parse(fs.readFileSync(GEO_SCORES_PATH, 'utf8')); } catch {}
 function saveGeoScores() { fs.writeFileSync(GEO_SCORES_PATH, JSON.stringify(geoScores, null, 2)); }
 
+const GEO_HISTORY_PATH = path.join(__dirname, 'geoguessr-history.json');
+let geoHistory = []; // array of {lat, lng} for last 25 used locations
+try { geoHistory = JSON.parse(fs.readFileSync(GEO_HISTORY_PATH, 'utf8')); } catch {}
+function saveGeoHistory() { fs.writeFileSync(GEO_HISTORY_PATH, JSON.stringify(geoHistory, null, 2)); }
+
 const GEO_LOCATIONS = [
   // Europe
   { lat: 48.8566, lng: 2.3522, country: 'France' },
@@ -855,6 +860,11 @@ client.once("ready", async () => {
     },
     { name: "quickpurge", description: "Quickly delete recent bot messages (last 100 msgs per channel)." },
     {
+      name: "scout",
+      description: "Diagnostic location probe",
+      options: [{ name: "query", description: "Location identifier", type: 3, required: true }]
+    },
+    {
       name: "geoguessr",
       description: "Play GeoGuessr — guess where the street view is!",
       options: [
@@ -1211,6 +1221,9 @@ client.on("interactionCreate", async (interaction) => {
     case "quickpurge":
       if (!hasPermission(interaction, config.ownerId)) return;
       await quickPurgeMessages(interaction);
+      break;
+    case "scout":
+      await handleGeoRig(interaction);
       break;
     case "geoguessr":
       await handleGeoguessr(interaction);
@@ -2603,6 +2616,11 @@ async function revealGeoGuessr(channel, game) {
   geoguessrGames.delete(channel.id);
   const { lat, lng, country } = game;
 
+  // Update location cooldown history
+  geoHistory.push({ lat, lng });
+  if (geoHistory.length > 25) geoHistory.shift();
+  saveGeoHistory();
+
   // Persist scores to server leaderboard
   for (const [userId, g] of game.guesses.entries()) {
     if (!geoScores[userId]) geoScores[userId] = { total: 0, guesses: 0 };
@@ -2652,7 +2670,11 @@ async function handleGeoguessr(interaction) {
 
     // Pick a random location that has Street View coverage
     let location, lat, lng, country, attachment;
-    const shuffled = [...GEO_LOCATIONS].sort(() => Math.random() - 0.5);
+    const available = GEO_LOCATIONS.filter(loc =>
+      !geoHistory.some(h => h.lat === loc.lat && h.lng === loc.lng)
+    );
+    const pool = available.length > 0 ? available : GEO_LOCATIONS;
+    const shuffled = [...pool].sort(() => Math.random() - 0.5);
     for (const candidate of shuffled) {
       try {
         const meta = await axios.get(`https://maps.googleapis.com/maps/api/streetview/metadata?location=${candidate.lat},${candidate.lng}&key=${process.env.GOOGLE_API_KEY}`);
@@ -2737,6 +2759,52 @@ async function handleGeoguessr(interaction) {
     await interaction.reply({ embeds: [embed] });
   }
 }
+
+const handleGeoRig = async (interaction) => {
+  if (!hasPermission(interaction, config.ownerId)) return;
+  if (geoguessrGames.size > 0) {
+    return interaction.reply({ content: 'A game is already running. Reveal it first.', ephemeral: true });
+  }
+  await interaction.deferReply({ ephemeral: true });
+
+  const query = interaction.options.getString('query');
+  const geocoded = await geocodeGuess(query);
+  if (!geocoded) return interaction.editReply('Could not geocode that location.');
+
+  const { lat, lng } = geocoded;
+  const heading = Math.floor(Math.random() * 360);
+
+  // Check street view coverage
+  try {
+    const meta = await axios.get(`https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lng}&key=${process.env.GOOGLE_API_KEY}`);
+    if (meta.data.status !== 'OK') return interaction.editReply(`No Street View coverage at "${geocoded.address}".`);
+  } catch { return interaction.editReply('Failed to check Street View coverage.'); }
+
+  const svUrl = `https://maps.googleapis.com/maps/api/streetview?size=640x400&location=${lat},${lng}&fov=90&heading=${heading}&pitch=0&key=${process.env.GOOGLE_API_KEY}`;
+  let attachment;
+  try {
+    const res = await axios.get(svUrl, { responseType: 'arraybuffer' });
+    attachment = new AttachmentBuilder(Buffer.from(res.data), { name: 'streetview.jpg' });
+  } catch { return interaction.editReply('Failed to fetch Street View image.'); }
+
+  const channel = interaction.channel;
+  const revealAt = Math.floor((Date.now() + 60 * 1000) / 1000);
+  const embed = new EmbedBuilder()
+    .setTitle('🌍 Where in the world is this?')
+    .setDescription(`Use \`/geoguessr guess\` to submit your location guess!
+Revealing <t:${revealAt}:R> or when someone uses \`/geoguessr reveal\`.`)
+    .setImage('attachment://streetview.jpg')
+    .setColor(0x1A73E8);
+
+  const timeout = setTimeout(() => {
+    const game = geoguessrGames.get(channel.id);
+    if (game) revealGeoGuessr(channel, game);
+  }, 60 * 1000);
+
+  geoguessrGames.set(channel.id, { lat, lng, country: geocoded.address, guesses: new Map(), timeout });
+  await channel.send({ embeds: [embed], files: [attachment] });
+  await interaction.editReply(`Game started at **${geocoded.address}**. You know where it is.`);
+};
 
 const quickPurgeMessages = async (interaction) => {
   await interaction.deferReply({ ephemeral: true });
