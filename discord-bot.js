@@ -2605,7 +2605,9 @@ async function revealGeoGuessr(channel, game) {
 
   // Persist scores to server leaderboard
   for (const [userId, g] of game.guesses.entries()) {
-    geoScores[userId] = (geoScores[userId] || 0) + g.score;
+    if (!geoScores[userId]) geoScores[userId] = { total: 0, guesses: 0 };
+    geoScores[userId].total += g.score;
+    geoScores[userId].guesses += 1;
   }
   if (game.guesses.size > 0) saveGeoScores();
 
@@ -2714,17 +2716,22 @@ async function handleGeoguessr(interaction) {
     await revealGeoGuessr(channel, game);
 
   } else if (sub === 'leaderboard') {
-    const sorted = Object.entries(geoScores).sort((a, b) => b[1] - a[1]).slice(0, 10);
-    if (sorted.length === 0) {
+    const entries = Object.entries(geoScores).filter(([, v]) => v.guesses > 0);
+    if (entries.length === 0) {
       return interaction.reply({ content: 'No scores yet! Start a game with `/geoguessr start`.', ephemeral: true });
     }
+    const sorted = entries
+      .map(([userId, v]) => ({ userId, avg: Math.round(v.total / v.guesses), guesses: v.guesses }))
+      .sort((a, b) => b.avg - a.avg)
+      .slice(0, 10);
     const medals = ['🥇', '🥈', '🥉'];
-    const board = sorted.map(([userId, total], i) =>
-      `${medals[i] || `**${i+1}.**`} <@${userId}> — **${total.toLocaleString()} pts**`
+    const board = sorted.map((e, i) =>
+      `${medals[i] || `**${i+1}.**`} <@${e.userId}> — **${e.avg.toLocaleString()} avg pts** *(${e.guesses} guess${e.guesses === 1 ? '' : 'es'})*`
     ).join('\n');
     const embed = new EmbedBuilder()
-      .setTitle('🌍 GeoGuessr — All-Time Leaderboard')
+      .setTitle('🌍 GeoGuessr — Accuracy Leaderboard')
       .setDescription(board)
+      .setFooter({ text: 'Ranked by average score per guess' })
       .setColor(0xF4C430);
     await interaction.reply({ embeds: [embed] });
   }
