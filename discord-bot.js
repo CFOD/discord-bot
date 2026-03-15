@@ -269,6 +269,22 @@ let geoHistory = []; // array of {lat, lng} for last 25 used locations
 try { geoHistory = JSON.parse(fs.readFileSync(GEO_HISTORY_PATH, 'utf8')); } catch {}
 function saveGeoHistory() { fs.writeFileSync(GEO_HISTORY_PATH, JSON.stringify(geoHistory, null, 2)); }
 
+let maintenanceMode = false;
+
+const GOOGLE_USAGE_PATH = path.join(__dirname, 'google-usage.json');
+let googleUsage = { month: '', count: 0 };
+try { googleUsage = JSON.parse(fs.readFileSync(GOOGLE_USAGE_PATH, 'utf8')); } catch {}
+function saveGoogleUsage() { fs.writeFileSync(GOOGLE_USAGE_PATH, JSON.stringify(googleUsage, null, 2)); }
+const GOOGLE_MONTHLY_LIMIT = 750;
+function checkGoogleQuota(n = 1) {
+  const month = new Date().toISOString().slice(0, 7);
+  if (googleUsage.month !== month) googleUsage = { month, count: 0 };
+  if (googleUsage.count + n > GOOGLE_MONTHLY_LIMIT) return false;
+  googleUsage.count += n;
+  saveGoogleUsage();
+  return true;
+}
+
 const GEO_LOCATIONS = [
   // Europe
   { lat: 48.8566, lng: 2.3522, country: 'France' },
@@ -858,6 +874,7 @@ client.once("ready", async () => {
         ],
       }],
     },
+    { name: "maintenance", description: "Toggle maintenance mode" },
     { name: "quickpurge", description: "Quickly delete recent bot messages (last 100 msgs per channel)." },
     {
       name: "scout",
@@ -1061,6 +1078,10 @@ client.on("interactionCreate", async (interaction) => {
     fs.appendFileSync("command_log.txt", logMessage);
   }
 
+  if (maintenanceMode && interaction.user.id !== config.ownerId) {
+    return interaction.reply({ content: '🔧 The bot is currently under maintenance. Please try again later.', ephemeral: true });
+  }
+
   switch (interaction.commandName) {
     case "help": {
       const helpPages = [
@@ -1218,6 +1239,18 @@ client.on("interactionCreate", async (interaction) => {
       if (!hasPermission(interaction, config.ownerId)) return;
       await purgeMessages(interaction);
       break;
+    case "maintenance": {
+      if (!hasPermission(interaction, config.ownerId)) return;
+      maintenanceMode = !maintenanceMode;
+      const usageMonth = googleUsage.month || 'N/A';
+      const usageCount = googleUsage.count || 0;
+      await interaction.reply({
+        content: `🔧 Maintenance mode **${maintenanceMode ? 'ENABLED — all commands blocked for non-owners' : 'DISABLED — bot is back online'}**.
+📊 Google API usage this month: **${usageCount}/${GOOGLE_MONTHLY_LIMIT}** (${usageMonth})`,
+        ephemeral: true
+      });
+      break;
+    }
     case "quickpurge":
       if (!hasPermission(interaction, config.ownerId)) return;
       await quickPurgeMessages(interaction);
@@ -2599,6 +2632,7 @@ function geoScore(km) {
 }
 
 async function geocodeGuess(query) {
+  if (!checkGoogleQuota()) { console.warn('[Quota] Google monthly limit reached'); return null; }
   try {
     const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${process.env.GOOGLE_API_KEY}`;
     const res = await axios.get(url);
@@ -2677,10 +2711,12 @@ async function handleGeoguessr(interaction) {
     const shuffled = [...pool].sort(() => Math.random() - 0.5);
     for (const candidate of shuffled) {
       try {
+        if (!checkGoogleQuota()) break; // metadata
         const meta = await axios.get(`https://maps.googleapis.com/maps/api/streetview/metadata?location=${candidate.lat},${candidate.lng}&key=${process.env.GOOGLE_API_KEY}`);
         if (meta.data.status !== 'OK') continue;
         const heading = Math.floor(Math.random() * 360);
         const svUrl = `https://maps.googleapis.com/maps/api/streetview?size=640x400&location=${candidate.lat},${candidate.lng}&fov=90&heading=${heading}&pitch=0&key=${process.env.GOOGLE_API_KEY}`;
+        if (!checkGoogleQuota()) break; // image
         const res = await axios.get(svUrl, { responseType: 'arraybuffer' });
         location = candidate;
         lat = candidate.lat; lng = candidate.lng; country = candidate.country;
@@ -2775,6 +2811,7 @@ const handleGeoRig = async (interaction) => {
   const heading = Math.floor(Math.random() * 360);
 
   // Check street view coverage
+  if (!checkGoogleQuota(2)) return interaction.editReply('Monthly Google API limit reached (750 requests). Try again next month.');
   try {
     const meta = await axios.get(`https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lng}&key=${process.env.GOOGLE_API_KEY}`);
     if (meta.data.status !== 'OK') return interaction.editReply(`No Street View coverage at "${geocoded.address}".`);
