@@ -2656,13 +2656,15 @@ async function revealGeoGuessr(channel, game) {
   if (geoHistory.length > 25) geoHistory.shift();
   saveGeoHistory();
 
-  // Persist scores to server leaderboard
-  for (const [userId, g] of game.guesses.entries()) {
-    if (!geoScores[userId]) geoScores[userId] = { total: 0, guesses: 0 };
-    geoScores[userId].total += g.score;
-    geoScores[userId].guesses += 1;
+  // Persist scores to server leaderboard (only if 2+ players guessed)
+  if (game.guesses.size > 1) {
+    for (const [userId, g] of game.guesses.entries()) {
+      if (!geoScores[userId]) geoScores[userId] = { total: 0, guesses: 0 };
+      geoScores[userId].total += g.score;
+      geoScores[userId].guesses += 1;
+    }
+    saveGeoScores();
   }
-  if (game.guesses.size > 0) saveGeoScores();
 
   const token = process.env.MAPBOX_TOKEN;
   const mapUrl = `https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/pin-l-star+f74e4e(${lng},${lat})/${lng},${lat},5,0/800x400?access_token=${token}`;
@@ -2686,7 +2688,7 @@ async function revealGeoGuessr(channel, game) {
     .setTitle(`🌍 The answer was: ${country}`)
     .setDescription(roundResults)
     .setColor(0x00AA00)
-    .setFooter({ text: `Coordinates: ${lat.toFixed(4)}, ${lng.toFixed(4)} | Use /geoguessr leaderboard to see all-time scores` });
+    .setFooter({ text: `Coordinates: ${lat.toFixed(4)}, ${lng.toFixed(4)} | ${game.guesses.size > 1 ? 'Use /geoguessr leaderboard to see all-time scores' : 'Scores not counted — need 2+ players'}` });
 
   if (mapAttachment) embed.setImage('attachment://result_map.png');
 
