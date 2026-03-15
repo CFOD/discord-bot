@@ -2689,6 +2689,9 @@ async function handleGeoguessr(interaction) {
     if (geoguessrGames.size > 0) {
       return interaction.reply({ content: 'A game is already running in the server. Use `/geoguessr reveal` to end it first.', ephemeral: true });
     }
+    const today = new Date().toISOString().slice(0, 10);
+    if (geoDaily.date !== today) geoDaily = { date: today, count: 0 };
+    if (geoDaily.count >= GEO_DAILY_LIMIT) return interaction.reply({ content: `Daily game limit reached (${geoDaily.count}/${GEO_DAILY_LIMIT}). Try again tomorrow.`, ephemeral: true });
     await interaction.deferReply();
 
     const available = GEO_LOCATIONS.filter(loc =>
@@ -2720,6 +2723,7 @@ async function handleGeoguessr(interaction) {
       if (game) revealGeoGuessr(channel, game);
     }, 60 * 1000);
 
+    geoDaily.count++;
     geoguessrGames.set(channel.id, { lat, lng, country, guesses: new Map(), timeout });
     await interaction.editReply({ embeds: [embed], files: [attachment] });
 
