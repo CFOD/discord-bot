@@ -259,6 +259,11 @@ const purgeChannelCache = new Map(); // channelId -> lastMessageId at time of la
 // === GEOGUESSR STATE ===
 const geoguessrGames = new Map(); // channelId -> { lat, lng, country, guesses, timeout }
 
+const GEO_SCORES_PATH = path.join(__dirname, 'geoguessr-scores.json');
+let geoScores = {}; // userId -> total points
+try { geoScores = JSON.parse(fs.readFileSync(GEO_SCORES_PATH, 'utf8')); } catch {}
+function saveGeoScores() { fs.writeFileSync(GEO_SCORES_PATH, JSON.stringify(geoScores, null, 2)); }
+
 const GEO_LOCATIONS = [
   // Europe
   { lat: 48.8566, lng: 2.3522, country: 'France' },
@@ -860,7 +865,8 @@ client.once("ready", async () => {
           type: 1,
           options: [{ name: "location", description: "Your guess (city, country, etc.)", type: 3, required: true }]
         },
-        { name: "reveal", description: "Reveal the answer early (owner only)", type: 1 }
+        { name: "reveal", description: "Reveal the answer early (owner only)", type: 1 },
+        { name: "leaderboard", description: "Show the all-time server leaderboard", type: 1 }
       ]
     },
     { name: "status", description: "Shows the current server status" },
@@ -2596,6 +2602,12 @@ async function revealGeoGuessr(channel, game) {
   geoguessrGames.delete(channel.id);
   const { lat, lng, country } = game;
 
+  // Persist scores to server leaderboard
+  for (const [userId, g] of game.guesses.entries()) {
+    geoScores[userId] = (geoScores[userId] || 0) + g.score;
+  }
+  if (game.guesses.size > 0) saveGeoScores();
+
   const token = process.env.MAPBOX_TOKEN;
   const mapUrl = `https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/pin-l-star+f74e4e(${lng},${lat})/${lng},${lat},5,0/800x400?access_token=${token}`;
 
@@ -2608,7 +2620,7 @@ async function revealGeoGuessr(channel, game) {
   const medals = ['🥇', '🥈', '🥉'];
   const sorted = [...game.guesses.entries()].sort((a, b) => b[1].score - a[1].score);
 
-  const leaderboard = sorted.length === 0
+  const roundResults = sorted.length === 0
     ? '*No one guessed!*'
     : sorted.map(([userId, g], i) =>
         `${medals[i] || `${i+1}.`} <@${userId}> — *${g.address}* — **${Math.round(g.distance).toLocaleString()} km** — **${g.score.toLocaleString()} pts**`
@@ -2616,9 +2628,9 @@ async function revealGeoGuessr(channel, game) {
 
   const embed = new EmbedBuilder()
     .setTitle(`🌍 The answer was: ${country}`)
-    .setDescription(leaderboard)
+    .setDescription(roundResults)
     .setColor(0x00AA00)
-    .setFooter({ text: `Coordinates: ${lat.toFixed(4)}, ${lng.toFixed(4)}` });
+    .setFooter({ text: `Coordinates: ${lat.toFixed(4)}, ${lng.toFixed(4)} | Use /geoguessr leaderboard to see all-time scores` });
 
   if (mapAttachment) embed.setImage('attachment://result_map.png');
 
@@ -2699,6 +2711,21 @@ async function handleGeoguessr(interaction) {
     }
     await interaction.reply({ content: 'Revealing...', ephemeral: true });
     await revealGeoGuessr(channel, game);
+
+  } else if (sub === 'leaderboard') {
+    const sorted = Object.entries(geoScores).sort((a, b) => b[1] - a[1]).slice(0, 10);
+    if (sorted.length === 0) {
+      return interaction.reply({ content: 'No scores yet! Start a game with `/geoguessr start`.', ephemeral: true });
+    }
+    const medals = ['🥇', '🥈', '🥉'];
+    const board = sorted.map(([userId, total], i) =>
+      `${medals[i] || `**${i+1}.**`} <@${userId}> — **${total.toLocaleString()} pts**`
+    ).join('\n');
+    const embed = new EmbedBuilder()
+      .setTitle('🌍 GeoGuessr — All-Time Leaderboard')
+      .setDescription(board)
+      .setColor(0xF4C430);
+    await interaction.reply({ embeds: [embed] });
   }
 }
 
