@@ -256,6 +256,131 @@ const knownEmergencies = new Map();
 const pendingEmergencies = new Map(); // requires 2 consecutive polls before alerting
 const purgeChannelCache = new Map(); // channelId -> lastMessageId at time of last purge
 
+// === GEOGUESSR STATE ===
+const geoguessrGames = new Map(); // channelId -> { lat, lng, country, guesses, timeout }
+
+const GEO_LOCATIONS = [
+  // Europe
+  { lat: 48.8566, lng: 2.3522, country: 'France' },
+  { lat: 48.2082, lng: 16.3738, country: 'Austria' },
+  { lat: 50.8503, lng: 4.3517, country: 'Belgium' },
+  { lat: 42.6977, lng: 23.3219, country: 'Bulgaria' },
+  { lat: 45.8150, lng: 15.9819, country: 'Croatia' },
+  { lat: 50.0755, lng: 14.4378, country: 'Czech Republic' },
+  { lat: 55.6761, lng: 12.5683, country: 'Denmark' },
+  { lat: 59.4370, lng: 24.7536, country: 'Estonia' },
+  { lat: 60.1699, lng: 24.9384, country: 'Finland' },
+  { lat: 52.5200, lng: 13.4050, country: 'Germany' },
+  { lat: 37.9838, lng: 23.7275, country: 'Greece' },
+  { lat: 47.4979, lng: 19.0402, country: 'Hungary' },
+  { lat: 53.3498, lng: -6.2603, country: 'Ireland' },
+  { lat: 41.9028, lng: 12.4964, country: 'Italy' },
+  { lat: 56.9496, lng: 24.1052, country: 'Latvia' },
+  { lat: 54.6872, lng: 25.2797, country: 'Lithuania' },
+  { lat: 52.3676, lng: 4.9041, country: 'Netherlands' },
+  { lat: 59.9139, lng: 10.7522, country: 'Norway' },
+  { lat: 52.2297, lng: 21.0122, country: 'Poland' },
+  { lat: 38.7223, lng: -9.1393, country: 'Portugal' },
+  { lat: 44.4268, lng: 26.1025, country: 'Romania' },
+  { lat: 55.7558, lng: 37.6173, country: 'Russia' },
+  { lat: 44.8176, lng: 20.4633, country: 'Serbia' },
+  { lat: 48.1486, lng: 17.1077, country: 'Slovakia' },
+  { lat: 40.4168, lng: -3.7038, country: 'Spain' },
+  { lat: 41.3275, lng: 19.8187, country: 'Albania' },
+  { lat: 59.3293, lng: 18.0686, country: 'Sweden' },
+  { lat: 47.3769, lng: 8.5417, country: 'Switzerland' },
+  { lat: 41.0082, lng: 28.9784, country: 'Turkey' },
+  { lat: 51.5074, lng: -0.1278, country: 'United Kingdom' },
+  { lat: 53.4808, lng: -2.2426, country: 'United Kingdom' },
+  { lat: 55.8642, lng: -4.2518, country: 'United Kingdom' },
+  // Americas
+  { lat: 40.7128, lng: -74.0060, country: 'USA' },
+  { lat: 34.0522, lng: -118.2437, country: 'USA' },
+  { lat: 41.8781, lng: -87.6298, country: 'USA' },
+  { lat: 29.7604, lng: -95.3698, country: 'USA' },
+  { lat: 25.7617, lng: -80.1918, country: 'USA' },
+  { lat: 47.6062, lng: -122.3321, country: 'USA' },
+  { lat: 39.9526, lng: -75.1652, country: 'USA' },
+  { lat: 43.6532, lng: -79.3832, country: 'Canada' },
+  { lat: 45.5017, lng: -73.5673, country: 'Canada' },
+  { lat: 49.2827, lng: -123.1207, country: 'Canada' },
+  { lat: 51.0447, lng: -114.0719, country: 'Canada' },
+  { lat: -23.5505, lng: -46.6333, country: 'Brazil' },
+  { lat: -22.9068, lng: -43.1729, country: 'Brazil' },
+  { lat: -15.7801, lng: -47.9292, country: 'Brazil' },
+  { lat: -34.6037, lng: -58.3816, country: 'Argentina' },
+  { lat: -33.4489, lng: -70.6693, country: 'Chile' },
+  { lat: -12.0464, lng: -77.0428, country: 'Peru' },
+  { lat: 4.7110, lng: -74.0721, country: 'Colombia' },
+  { lat: 10.4806, lng: -66.9036, country: 'Venezuela' },
+  { lat: 19.4326, lng: -99.1332, country: 'Mexico' },
+  { lat: 20.9674, lng: -89.6237, country: 'Mexico' },
+  { lat: 9.1021, lng: -79.4023, country: 'Panama' },
+  { lat: 18.4861, lng: -69.9312, country: 'Dominican Republic' },
+  // Asia
+  { lat: 35.6762, lng: 139.6503, country: 'Japan' },
+  { lat: 34.6937, lng: 135.5023, country: 'Japan' },
+  { lat: 43.0618, lng: 141.3545, country: 'Japan' },
+  { lat: 37.5665, lng: 126.9780, country: 'South Korea' },
+  { lat: 35.1796, lng: 129.0756, country: 'South Korea' },
+  { lat: 39.9042, lng: 116.4074, country: 'China' },
+  { lat: 31.2304, lng: 121.4737, country: 'China' },
+  { lat: 23.1291, lng: 113.2644, country: 'China' },
+  { lat: 22.3193, lng: 114.1694, country: 'Hong Kong' },
+  { lat: 1.3521, lng: 103.8198, country: 'Singapore' },
+  { lat: 13.7563, lng: 100.5018, country: 'Thailand' },
+  { lat: 18.7961, lng: 98.9647, country: 'Thailand' },
+  { lat: 21.0278, lng: 105.8342, country: 'Vietnam' },
+  { lat: 10.8231, lng: 106.6297, country: 'Vietnam' },
+  { lat: 3.1390, lng: 101.6869, country: 'Malaysia' },
+  { lat: 14.5995, lng: 120.9842, country: 'Philippines' },
+  { lat: 28.6139, lng: 77.2090, country: 'India' },
+  { lat: 19.0760, lng: 72.8777, country: 'India' },
+  { lat: 13.0827, lng: 80.2707, country: 'India' },
+  { lat: 12.9716, lng: 77.5946, country: 'India' },
+  { lat: 23.7275, lng: 90.4125, country: 'Bangladesh' },
+  { lat: 7.8731, lng: 80.7718, country: 'Sri Lanka' },
+  { lat: 27.7172, lng: 85.3240, country: 'Nepal' },
+  { lat: 41.2995, lng: 69.2401, country: 'Uzbekistan' },
+  { lat: 51.1801, lng: 71.4460, country: 'Kazakhstan' },
+  { lat: 42.8746, lng: 74.5698, country: 'Kyrgyzstan' },
+  // Middle East
+  { lat: 25.2048, lng: 55.2708, country: 'UAE' },
+  { lat: 24.4539, lng: 54.3773, country: 'UAE' },
+  { lat: 24.6877, lng: 46.7219, country: 'Saudi Arabia' },
+  { lat: 21.3891, lng: 39.8579, country: 'Saudi Arabia' },
+  { lat: 31.7683, lng: 35.2137, country: 'Israel' },
+  { lat: 32.0853, lng: 34.7818, country: 'Israel' },
+  { lat: 33.8869, lng: 35.5131, country: 'Lebanon' },
+  { lat: 39.9208, lng: 32.8541, country: 'Turkey' },
+  { lat: 29.3759, lng: 47.9774, country: 'Kuwait' },
+  { lat: 25.2854, lng: 51.5310, country: 'Qatar' },
+  // Africa
+  { lat: -33.9249, lng: 18.4241, country: 'South Africa' },
+  { lat: -26.2041, lng: 28.0473, country: 'South Africa' },
+  { lat: -29.8587, lng: 31.0218, country: 'South Africa' },
+  { lat: 30.0444, lng: 31.2357, country: 'Egypt' },
+  { lat: -1.2921, lng: 36.8219, country: 'Kenya' },
+  { lat: -4.0435, lng: 39.6682, country: 'Kenya' },
+  { lat: 5.6037, lng: -0.1870, country: 'Ghana' },
+  { lat: 6.5244, lng: 3.3792, country: 'Nigeria' },
+  { lat: 14.7167, lng: -17.4677, country: 'Senegal' },
+  { lat: -25.9692, lng: 32.5732, country: 'Mozambique' },
+  { lat: -6.1630, lng: 35.7516, country: 'Tanzania' },
+  { lat: -17.7251, lng: 31.0335, country: 'Zimbabwe' },
+  { lat: 33.9716, lng: -6.8498, country: 'Morocco' },
+  { lat: 36.8189, lng: 10.1658, country: 'Tunisia' },
+  // Oceania
+  { lat: -33.8688, lng: 151.2093, country: 'Australia' },
+  { lat: -37.8136, lng: 144.9631, country: 'Australia' },
+  { lat: -27.4698, lng: 153.0251, country: 'Australia' },
+  { lat: -31.9505, lng: 115.8605, country: 'Australia' },
+  { lat: -36.8485, lng: 174.7633, country: 'New Zealand' },
+  { lat: -41.2865, lng: 174.7762, country: 'New Zealand' },
+  { lat: -43.5321, lng: 172.6362, country: 'New Zealand' },
+];
+
+
 function loadPurgeCache() {
   try {
     if (fs.existsSync(PURGE_CACHE_PATH)) {
@@ -724,6 +849,20 @@ client.once("ready", async () => {
       }],
     },
     { name: "quickpurge", description: "Quickly delete recent bot messages (last 100 msgs per channel)." },
+    {
+      name: "geoguessr",
+      description: "Play GeoGuessr — guess where the street view is!",
+      options: [
+        { name: "start", description: "Start a new round", type: 1 },
+        {
+          name: "guess",
+          description: "Submit your location guess",
+          type: 1,
+          options: [{ name: "location", description: "Your guess (city, country, etc.)", type: 3, required: true }]
+        },
+        { name: "reveal", description: "Reveal the answer early (owner only)", type: 1 }
+      ]
+    },
     { name: "status", description: "Shows the current server status" },
     { name: "help", description: "Lists all available commands" },
     { name: "josep", description: "Make the fat Greek speak" },
@@ -1066,6 +1205,9 @@ client.on("interactionCreate", async (interaction) => {
     case "quickpurge":
       if (!hasPermission(interaction, config.ownerId)) return;
       await quickPurgeMessages(interaction);
+      break;
+    case "geoguessr":
+      await handleGeoguessr(interaction);
       break;
     case "sepsearch": {
       const query = interaction.options.getString("query").toLowerCase();
@@ -2422,6 +2564,138 @@ const purgeMessages = async (interaction) => {
     await interaction.editReply('An error occurred while purging messages.');
   }
 };
+
+
+// === GEOGUESSR HELPERS ===
+function haversineKm(lat1, lng1, lat2, lng2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function geoScore(km) {
+  return Math.max(0, Math.round(5000 * Math.exp(-km / 2000)));
+}
+
+async function geocodeGuess(query) {
+  try {
+    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${process.env.GOOGLE_API_KEY}`;
+    const res = await axios.get(url);
+    if (res.data.status === 'OK' && res.data.results.length > 0) {
+      const loc = res.data.results[0].geometry.location;
+      return { lat: loc.lat, lng: loc.lng, address: res.data.results[0].formatted_address };
+    }
+  } catch {}
+  return null;
+}
+
+async function revealGeoGuessr(channel, game) {
+  clearTimeout(game.timeout);
+  geoguessrGames.delete(channel.id);
+  const { lat, lng, country } = game;
+
+  const token = process.env.MAPBOX_TOKEN;
+  const mapUrl = `https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/pin-l-star+f74e4e(${lng},${lat})/${lng},${lat},5,0/800x400?access_token=${token}`;
+
+  let mapAttachment = null;
+  try {
+    const res = await axios.get(mapUrl, { responseType: 'arraybuffer' });
+    mapAttachment = new AttachmentBuilder(Buffer.from(res.data), { name: 'result_map.png' });
+  } catch {}
+
+  const medals = ['🥇', '🥈', '🥉'];
+  const sorted = [...game.guesses.entries()].sort((a, b) => b[1].score - a[1].score);
+
+  const leaderboard = sorted.length === 0
+    ? '*No one guessed!*'
+    : sorted.map(([userId, g], i) =>
+        `${medals[i] || `${i+1}.`} <@${userId}> — *${g.address}* — **${Math.round(g.distance).toLocaleString()} km** — **${g.score.toLocaleString()} pts**`
+      ).join('\n');
+
+  const embed = new EmbedBuilder()
+    .setTitle(`🌍 The answer was: ${country}`)
+    .setDescription(leaderboard)
+    .setColor(0x00AA00)
+    .setFooter({ text: `Coordinates: ${lat.toFixed(4)}, ${lng.toFixed(4)}` });
+
+  if (mapAttachment) embed.setImage('attachment://result_map.png');
+
+  await channel.send({ embeds: [embed], files: mapAttachment ? [mapAttachment] : [] });
+}
+
+async function handleGeoguessr(interaction) {
+  const sub = interaction.options.getSubcommand();
+  const channel = interaction.channel;
+
+  if (sub === 'start') {
+    if (geoguessrGames.has(channel.id)) {
+      return interaction.reply({ content: 'A game is already running here. Use `/geoguessr reveal` to end it first.', ephemeral: true });
+    }
+    await interaction.deferReply();
+
+    const location = GEO_LOCATIONS[Math.floor(Math.random() * GEO_LOCATIONS.length)];
+    const { lat, lng, country } = location;
+    const heading = Math.floor(Math.random() * 360);
+    const svUrl = `https://maps.googleapis.com/maps/api/streetview?size=640x400&location=${lat},${lng}&fov=90&heading=${heading}&pitch=0&key=${process.env.GOOGLE_API_KEY}`;
+
+    let attachment;
+    try {
+      const res = await axios.get(svUrl, { responseType: 'arraybuffer' });
+      attachment = new AttachmentBuilder(Buffer.from(res.data), { name: 'streetview.jpg' });
+    } catch {
+      return interaction.editReply('Failed to fetch street view image. Try again.');
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle('🌍 Where in the world is this?')
+      .setDescription('Use `/geoguessr guess` to submit your location guess!\nThe answer will be revealed in **3 minutes** or when someone uses `/geoguessr reveal`.')
+      .setImage('attachment://streetview.jpg')
+      .setColor(0x1A73E8);
+
+    const timeout = setTimeout(() => {
+      const game = geoguessrGames.get(channel.id);
+      if (game) revealGeoGuessr(channel, game);
+    }, 3 * 60 * 1000);
+
+    geoguessrGames.set(channel.id, { lat, lng, country, guesses: new Map(), timeout });
+    await interaction.editReply({ embeds: [embed], files: [attachment] });
+
+  } else if (sub === 'guess') {
+    const game = geoguessrGames.get(channel.id);
+    if (!game) {
+      return interaction.reply({ content: 'No game is running here. Start one with `/geoguessr start`.', ephemeral: true });
+    }
+    if (game.guesses.has(interaction.user.id)) {
+      return interaction.reply({ content: 'You have already guessed for this round!', ephemeral: true });
+    }
+    await interaction.deferReply({ ephemeral: true });
+
+    const query = interaction.options.getString('location');
+    const geocoded = await geocodeGuess(query);
+    if (!geocoded) {
+      return interaction.editReply("Couldn't find that location. Try being more specific.");
+    }
+
+    const distance = haversineKm(game.lat, game.lng, geocoded.lat, geocoded.lng);
+    const score = geoScore(distance);
+    game.guesses.set(interaction.user.id, { address: geocoded.address, distance, score });
+
+    await interaction.editReply(
+      `📍 You guessed **${geocoded.address}**\n📏 Distance from answer: **${Math.round(distance).toLocaleString()} km**\n⭐ Score: **${score.toLocaleString()} / 5,000 pts**`
+    );
+
+  } else if (sub === 'reveal') {
+    if (!hasPermission(interaction, config.ownerId)) return;
+    const game = geoguessrGames.get(channel.id);
+    if (!game) {
+      return interaction.reply({ content: 'No game is running here.', ephemeral: true });
+    }
+    await interaction.reply({ content: 'Revealing...', ephemeral: true });
+    await revealGeoGuessr(channel, game);
+  }
+}
 
 const quickPurgeMessages = async (interaction) => {
   await interaction.deferReply({ ephemeral: true });
