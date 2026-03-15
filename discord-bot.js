@@ -286,7 +286,6 @@ function checkGoogleQuota(n = 1) {
 }
 
 const GEO_LOCATIONS = [
-  // Europe
   { lat: 48.8566, lng: 2.3522, country: 'France' },
   { lat: 48.2082, lng: 16.3738, country: 'Austria' },
   { lat: 50.8503, lng: 4.3517, country: 'Belgium' },
@@ -319,7 +318,6 @@ const GEO_LOCATIONS = [
   { lat: 51.5074, lng: -0.1278, country: 'United Kingdom' },
   { lat: 53.4808, lng: -2.2426, country: 'United Kingdom' },
   { lat: 55.8642, lng: -4.2518, country: 'United Kingdom' },
-  // Americas
   { lat: 40.7128, lng: -74.0060, country: 'USA' },
   { lat: 34.0522, lng: -118.2437, country: 'USA' },
   { lat: 41.8781, lng: -87.6298, country: 'USA' },
@@ -343,12 +341,10 @@ const GEO_LOCATIONS = [
   { lat: 20.9674, lng: -89.6237, country: 'Mexico' },
   { lat: 9.1021, lng: -79.4023, country: 'Panama' },
   { lat: 18.4861, lng: -69.9312, country: 'Dominican Republic' },
-  // Asia
   { lat: 35.6762, lng: 139.6503, country: 'Japan' },
   { lat: 34.6937, lng: 135.5023, country: 'Japan' },
   { lat: 43.0618, lng: 141.3545, country: 'Japan' },
   { lat: 37.5665, lng: 126.9780, country: 'South Korea' },
-  { lat: 35.1796, lng: 129.0756, country: 'South Korea' },
   { lat: 39.9042, lng: 116.4074, country: 'China' },
   { lat: 31.2304, lng: 121.4737, country: 'China' },
   { lat: 23.1291, lng: 113.2644, country: 'China' },
@@ -360,28 +356,22 @@ const GEO_LOCATIONS = [
   { lat: 10.8231, lng: 106.6297, country: 'Vietnam' },
   { lat: 3.1390, lng: 101.6869, country: 'Malaysia' },
   { lat: 14.5995, lng: 120.9842, country: 'Philippines' },
-  { lat: 28.6139, lng: 77.2090, country: 'India' },
   { lat: 19.0760, lng: 72.8777, country: 'India' },
   { lat: 13.0827, lng: 80.2707, country: 'India' },
   { lat: 12.9716, lng: 77.5946, country: 'India' },
   { lat: 23.7275, lng: 90.4125, country: 'Bangladesh' },
-  { lat: 7.8731, lng: 80.7718, country: 'Sri Lanka' },
   { lat: 27.7172, lng: 85.3240, country: 'Nepal' },
   { lat: 41.2995, lng: 69.2401, country: 'Uzbekistan' },
   { lat: 51.1801, lng: 71.4460, country: 'Kazakhstan' },
   { lat: 42.8746, lng: 74.5698, country: 'Kyrgyzstan' },
-  // Middle East
   { lat: 25.2048, lng: 55.2708, country: 'UAE' },
-  { lat: 24.4539, lng: 54.3773, country: 'UAE' },
   { lat: 24.6877, lng: 46.7219, country: 'Saudi Arabia' },
-  { lat: 21.3891, lng: 39.8579, country: 'Saudi Arabia' },
   { lat: 31.7683, lng: 35.2137, country: 'Israel' },
   { lat: 32.0853, lng: 34.7818, country: 'Israel' },
   { lat: 33.8869, lng: 35.5131, country: 'Lebanon' },
   { lat: 39.9208, lng: 32.8541, country: 'Turkey' },
   { lat: 29.3759, lng: 47.9774, country: 'Kuwait' },
   { lat: 25.2854, lng: 51.5310, country: 'Qatar' },
-  // Africa
   { lat: -33.9249, lng: 18.4241, country: 'South Africa' },
   { lat: -26.2041, lng: 28.0473, country: 'South Africa' },
   { lat: -29.8587, lng: 31.0218, country: 'South Africa' },
@@ -392,11 +382,6 @@ const GEO_LOCATIONS = [
   { lat: 6.5244, lng: 3.3792, country: 'Nigeria' },
   { lat: 14.7167, lng: -17.4677, country: 'Senegal' },
   { lat: -25.9692, lng: 32.5732, country: 'Mozambique' },
-  { lat: -6.1630, lng: 35.7516, country: 'Tanzania' },
-  { lat: -17.7251, lng: 31.0335, country: 'Zimbabwe' },
-  { lat: 33.9716, lng: -6.8498, country: 'Morocco' },
-  { lat: 36.8189, lng: 10.1658, country: 'Tunisia' },
-  // Oceania
   { lat: -33.8688, lng: 151.2093, country: 'Australia' },
   { lat: -37.8136, lng: 144.9631, country: 'Australia' },
   { lat: -27.4698, lng: 153.0251, country: 'Australia' },
@@ -2702,29 +2687,22 @@ async function handleGeoguessr(interaction) {
     }
     await interaction.deferReply();
 
-    // Pick a random location that has Street View coverage
-    let location, lat, lng, country, attachment;
     const available = GEO_LOCATIONS.filter(loc =>
       !geoHistory.some(h => h.lat === loc.lat && h.lng === loc.lng)
     );
     const pool = available.length > 0 ? available : GEO_LOCATIONS;
-    const shuffled = [...pool].sort(() => Math.random() - 0.5);
-    for (const candidate of shuffled) {
-      try {
-        if (!checkGoogleQuota()) break; // metadata
-        const meta = await axios.get(`https://maps.googleapis.com/maps/api/streetview/metadata?location=${candidate.lat},${candidate.lng}&key=${process.env.GOOGLE_API_KEY}`);
-        if (meta.data.status !== 'OK') continue;
-        const heading = Math.floor(Math.random() * 360);
-        const svUrl = `https://maps.googleapis.com/maps/api/streetview?size=640x400&location=${candidate.lat},${candidate.lng}&fov=90&heading=${heading}&pitch=0&key=${process.env.GOOGLE_API_KEY}`;
-        if (!checkGoogleQuota()) break; // image
-        const res = await axios.get(svUrl, { responseType: 'arraybuffer' });
-        location = candidate;
-        lat = candidate.lat; lng = candidate.lng; country = candidate.country;
-        attachment = new AttachmentBuilder(Buffer.from(res.data), { name: 'streetview.jpg' });
-        break;
-      } catch { continue; }
+    const location = pool[Math.floor(Math.random() * pool.length)];
+    const { lat, lng, country } = location;
+    const heading = Math.floor(Math.random() * 360);
+    const svUrl = `https://maps.googleapis.com/maps/api/streetview?size=640x400&location=${lat},${lng}&fov=90&heading=${heading}&pitch=0&key=${process.env.GOOGLE_API_KEY}`;
+    if (!checkGoogleQuota()) return interaction.editReply('Monthly Google API limit reached (750 requests). Try again next month.');
+    let attachment;
+    try {
+      const res = await axios.get(svUrl, { responseType: 'arraybuffer' });
+      attachment = new AttachmentBuilder(Buffer.from(res.data), { name: 'streetview.jpg' });
+    } catch {
+      return interaction.editReply('Failed to fetch street view image. Try again.');
     }
-    if (!attachment) return interaction.editReply('Could not find a location with Street View coverage. Try again.');
 
     const revealAt = Math.floor((Date.now() + 60 * 1000) / 1000);
     const embed = new EmbedBuilder()
