@@ -2923,18 +2923,23 @@ async function handleGeoguessr(interaction) {
     if (entries.length === 0) {
       return interaction.reply({ content: 'No scores yet! Start a game with `/geoguessr start`.', ephemeral: true });
     }
+    const W = 10, PRIOR = 2500;
     const sorted = entries
-      .map(([userId, v]) => ({ userId, avg: Math.round(v.total / v.guesses), guesses: v.guesses }))
-      .sort((a, b) => b.avg - a.avg)
+      .map(([userId, v]) => {
+        const avg = v.total / v.guesses;
+        const weighted = Math.round((v.guesses * avg + W * PRIOR) / (v.guesses + W));
+        return { userId, avg: Math.round(avg), weighted, guesses: v.guesses };
+      })
+      .sort((a, b) => b.weighted - a.weighted)
       .slice(0, 10);
     const medals = ['🥇', '🥈', '🥉'];
     const board = sorted.map((e, i) =>
-      `${medals[i] || `**${i+1}.**`} <@${e.userId}> — **${e.avg.toLocaleString()} avg pts** *(${e.guesses} guess${e.guesses === 1 ? '' : 'es'})*`
+      `${medals[i] || `**${i+1}.**`} <@${e.userId}> — **${e.weighted.toLocaleString()} pts** *(${e.avg.toLocaleString()} avg over ${e.guesses} game${e.guesses === 1 ? '' : 's'})*`
     ).join('\n');
     const embed = new EmbedBuilder()
       .setTitle('🌍 GeoGuessr — Accuracy Leaderboard')
       .setDescription(board)
-      .setFooter({ text: 'Ranked by average score per guess' })
+      .setFooter({ text: 'Ranked by weighted score (rewards consistency over many games)' })
       .setColor(0xF4C430);
     await interaction.reply({ embeds: [embed] });
   }
