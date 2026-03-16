@@ -2923,7 +2923,7 @@ async function handleGeoguessr(interaction) {
     if (entries.length === 0) {
       return interaction.reply({ content: 'No scores yet! Start a game with `/geoguessr start`.', ephemeral: true });
     }
-    const W = 10, PRIOR = 2500;
+    const W = 20, PRIOR = 2500;
     const sorted = entries
       .map(([userId, v]) => {
         const avg = v.total / v.guesses;
