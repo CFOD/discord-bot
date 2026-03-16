@@ -2852,15 +2852,31 @@ async function handleGeoguessr(interaction) {
     if (geoDaily.count >= GEO_DAILY_LIMIT) return interaction.reply({ content: `Daily game limit reached (${geoDaily.count}/${GEO_DAILY_LIMIT}). Try again tomorrow.`, ephemeral: true });
     await interaction.deferReply();
 
-    const available = GEO_LOCATIONS.filter(loc =>
-      !geoHistory.some(h => h.lat === loc.lat && h.lng === loc.lng)
-    );
-    const pool = available.length > 0 ? available : GEO_LOCATIONS;
-    const location = pool[Math.floor(Math.random() * pool.length)];
-    const { lat, lng, country } = location;
     const heading = Math.floor(Math.random() * 360);
-    const svUrl = `https://maps.googleapis.com/maps/api/streetview?size=640x400&location=${lat},${lng}&fov=90&heading=${heading}&pitch=0&key=${process.env.GOOGLE_API_KEY}`;
+    let lat, lng, country = 'Unknown location';
+    let found = false;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const tryLat = (Math.random() * 135) - 60;
+      const tryLng = (Math.random() * 360) - 180;
+      if (!checkGoogleQuota()) return interaction.editReply('Monthly Google API limit reached (750 requests). Try again next month.');
+      try {
+        const meta = await axios.get(`https://maps.googleapis.com/maps/api/streetview/metadata?location=${tryLat},${tryLng}&key=${process.env.GOOGLE_API_KEY}`);
+        if (meta.data.status === 'OK') {
+          lat = meta.data.location?.lat ?? tryLat;
+          lng = meta.data.location?.lng ?? tryLng;
+          found = true;
+          break;
+        }
+      } catch {}
+    }
+    if (!found) return interaction.editReply('Could not find a Street View location after several tries. Please try again.');
+    try {
+      const rev = await axios.get(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`, { headers: { 'User-Agent': 'discord-geoguessr-bot/1.0' } });
+      if (rev.data?.address?.country) country = rev.data.address.country;
+      else if (rev.data?.display_name) country = rev.data.display_name.split(',').slice(-2).join(',').trim();
+    } catch {}
     if (!checkGoogleQuota()) return interaction.editReply('Monthly Google API limit reached (750 requests). Try again next month.');
+    const svUrl = `https://maps.googleapis.com/maps/api/streetview?size=640x400&location=${lat},${lng}&fov=90&heading=${heading}&pitch=0&key=${process.env.GOOGLE_API_KEY}`;
     let attachment;
     try {
       const res = await axios.get(svUrl, { responseType: 'arraybuffer' });
