@@ -2855,12 +2855,12 @@ async function handleGeoguessr(interaction) {
     const heading = Math.floor(Math.random() * 360);
     let lat, lng, country = 'Unknown location';
     let found = false;
-    for (let attempt = 0; attempt < 10; attempt++) {
+    for (let attempt = 0; attempt < 20; attempt++) {
       const tryLat = (Math.random() * 135) - 60;
       const tryLng = (Math.random() * 360) - 180;
       if (!checkGoogleQuota()) return interaction.editReply('Monthly Google API limit reached (750 requests). Try again next month.');
       try {
-        const meta = await axios.get(`https://maps.googleapis.com/maps/api/streetview/metadata?location=${tryLat},${tryLng}&key=${process.env.GOOGLE_API_KEY}`);
+        const meta = await axios.get(`https://maps.googleapis.com/maps/api/streetview/metadata?location=${tryLat},${tryLng}&radius=5000&key=${process.env.GOOGLE_API_KEY}`);
         if (meta.data.status === 'OK') {
           lat = meta.data.location?.lat ?? tryLat;
           lng = meta.data.location?.lng ?? tryLng;
