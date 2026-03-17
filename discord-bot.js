@@ -33,6 +33,7 @@ const config = {
     { userId: "c8dce899-5b6b-4534-3fb9-08dca7f6f6ee", username: "Celestial" },
     { userId: "750e3239-b319-402d-902d-7a7723729382", username: "maxpilot95" },
     { userId: "825dfa11-fbd8-4ce4-e5b9-08da9b1a2a09", username: "fsxaviator1" },
+    { userId: "89bffd57-ffc9-43e3-aab4-0c13c3a5d0bf", username: "AppleJuice" },
   ],
 };
 
@@ -275,7 +276,7 @@ const GOOGLE_USAGE_PATH = path.join(__dirname, 'google-usage.json');
 let googleUsage = { month: '', count: 0 };
 try { googleUsage = JSON.parse(fs.readFileSync(GOOGLE_USAGE_PATH, 'utf8')); } catch {}
 function saveGoogleUsage() { fs.writeFileSync(GOOGLE_USAGE_PATH, JSON.stringify(googleUsage, null, 2)); }
-const GOOGLE_MONTHLY_LIMIT = 750;
+const GOOGLE_MONTHLY_LIMIT = 2000;
 let geoDaily = { date: '', count: 0 };
 const GEO_DAILY_LIMIT = 70;
 const SPASTIC_VOTES_PATH = path.join(__dirname, 'spastic-votes.json');
@@ -901,7 +902,6 @@ client.once("ready", async () => {
           type: 1,
           options: [{ name: "user", description: "Who do you nominate?", type: 6, required: true }]
         },
-        { name: "results", description: "See today's current vote standings", type: 1 },
         { name: "leaderboard", description: "All-time Spastic of the Day wins", type: 1 }
       ]
     },
@@ -2607,26 +2607,6 @@ const handleSpastic = async (interaction) => {
     const action = already ? 'changed their vote' : 'voted';
     return interaction.reply({ content: `🗳️ **${interaction.user.username}** ${action} for Spastic of the Day!` });
 
-  } else if (sub === 'results') {
-    if (Object.keys(spasticVotes.votes).length === 0) {
-      return interaction.reply({ content: 'No votes yet today! Use `/spastic vote` to nominate someone.' });
-    }
-    const counts = {};
-    for (const votedId of Object.values(spasticVotes.votes)) {
-      counts[votedId] = (counts[votedId] || 0) + 1;
-    }
-    const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-    const medals = ['🥇', '🥈', '🥉'];
-    const lines = sorted.map(([id, n], i) =>
-      `${medals[i] || `${i+1}.`} <@${id}> — **${n} vote${n === 1 ? '' : 's'}**`
-    ).join('\n');
-    const embed = new EmbedBuilder()
-      .setTitle(`🤡 Spastic of the Day — ${today}`)
-      .setDescription(lines)
-      .setColor(0xFF6B35)
-      .setFooter({ text: `${Object.keys(spasticVotes.votes).length} votes cast` });
-    return interaction.reply({ embeds: [embed] });
-
   } else if (sub === 'leaderboard') {
     const entries = Object.entries(spasticWins).filter(([, n]) => n > 0);
     if (entries.length === 0) {
@@ -2858,7 +2838,7 @@ async function handleGeoguessr(interaction) {
     for (let attempt = 0; attempt < 20; attempt++) {
       const tryLat = (Math.random() * 135) - 60;
       const tryLng = (Math.random() * 360) - 180;
-      if (!checkGoogleQuota()) return interaction.editReply('Monthly Google API limit reached (750 requests). Try again next month.');
+      if (!checkGoogleQuota()) return interaction.editReply('Monthly Google API limit reached (2000 requests). Try again next month.');
       try {
         const meta = await axios.get(`https://maps.googleapis.com/maps/api/streetview/metadata?location=${tryLat},${tryLng}&radius=5000&key=${process.env.GOOGLE_API_KEY}`);
         if (meta.data.status === 'OK') {
@@ -2875,7 +2855,7 @@ async function handleGeoguessr(interaction) {
       if (rev.data?.address?.country) country = rev.data.address.country;
       else if (rev.data?.display_name) country = rev.data.display_name.split(',').slice(-2).join(',').trim();
     } catch {}
-    if (!checkGoogleQuota()) return interaction.editReply('Monthly Google API limit reached (750 requests). Try again next month.');
+    if (!checkGoogleQuota()) return interaction.editReply('Monthly Google API limit reached (2000 requests). Try again next month.');
     const svUrl = `https://maps.googleapis.com/maps/api/streetview?size=640x400&location=${lat},${lng}&fov=90&heading=${heading}&pitch=0&key=${process.env.GOOGLE_API_KEY}`;
     let attachment;
     try {
@@ -2979,7 +2959,7 @@ const handleGeoRig = async (interaction) => {
   const heading = Math.floor(Math.random() * 360);
 
   // Check street view coverage
-  if (!checkGoogleQuota(2)) return interaction.editReply('Monthly Google API limit reached (750 requests). Try again next month.');
+  if (!checkGoogleQuota(2)) return interaction.editReply('Monthly Google API limit reached (2000 requests). Try again next month.');
   try {
     const meta = await axios.get(`https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lng}&key=${process.env.GOOGLE_API_KEY}`);
     if (meta.data.status !== 'OK') return interaction.editReply(`No Street View coverage at "${geocoded.address}".`);
