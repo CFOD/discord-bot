@@ -2605,7 +2605,9 @@ const handleSpastic = async (interaction) => {
     spasticVotes.votes[interaction.user.id] = target.id;
     saveSpasticVotes();
     const action = already ? 'changed their vote' : 'voted';
-    return interaction.reply({ content: `🗳️ **${interaction.user.username}** ${action} for Spastic of the Day!` });
+    await interaction.reply({ content: '✅ Vote recorded!', ephemeral: true });
+    await interaction.channel.send(`🗳️ **${interaction.user.username}** ${action} for Spastic of the Day!`);
+    return;
 
   } else if (sub === 'leaderboard') {
     const entries = Object.entries(spasticWins).filter(([, n]) => n > 0);
