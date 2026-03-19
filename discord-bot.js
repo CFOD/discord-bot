@@ -900,7 +900,10 @@ client.once("ready", async () => {
           name: "vote",
           description: "Nominate today's Spastic of the Day",
           type: 1,
-          options: [{ name: "user", description: "Who do you nominate?", type: 6, required: true }]
+          options: [
+            { name: "user", description: "Who do you nominate?", type: 6, required: true },
+            { name: "reason", description: "Why are they the spastic? (anonymous)", type: 3, required: false }
+          ]
         },
         { name: "leaderboard", description: "All-time Spastic of the Day wins", type: 1 }
       ]
@@ -2530,10 +2533,15 @@ function scheduleAutoPurge(client) {
 // ====== Status / Purge ======
 async function postSpasticResults(client) {
   const today = new Date().toISOString().slice(0, 10);
+  const announceDate = spasticVotes.date || today;
   if (Object.keys(spasticVotes.votes).length === 0) return;
   const counts = {};
-  for (const votedId of Object.values(spasticVotes.votes)) {
+  const reasons = {};
+  for (const vote of Object.values(spasticVotes.votes)) {
+    const votedId = typeof vote === 'string' ? vote : vote.id;
+    const reason = typeof vote === 'object' ? vote.reason : null;
     counts[votedId] = (counts[votedId] || 0) + 1;
+    if (reason) { if (!reasons[votedId]) reasons[votedId] = []; reasons[votedId].push(reason); }
   }
   const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
   const [winnerId, winCount] = sorted[0];
@@ -2547,7 +2555,7 @@ async function postSpasticResults(client) {
     `${medals[i] || `${i+1}.`} <@${id}> — **${n} vote${n === 1 ? '' : 's'}**`
   ).join('\n');
   const embed = new EmbedBuilder()
-    .setTitle(`🤡 Spastic of the Day — ${today}`)
+    .setTitle(`🤡 Spastic of the Day — ${announceDate}`)
     .setDescription(lines)
     .setColor(0xFF6B35)
     .setFooter({ text: `${Object.keys(spasticVotes.votes).length || Object.keys(counts).length} votes cast` });
@@ -2560,6 +2568,12 @@ async function postSpasticResults(client) {
 
 function scheduleSpasticResults(client) {
   const now = new Date();
+  const today = now.toISOString().slice(0, 10);
+  // If there are unannounced results from a previous day, post them immediately
+  if (spasticVotes.date && spasticVotes.date !== today && Object.keys(spasticVotes.votes).length > 0) {
+    console.log('[Spastic] Missed results detected, posting now...');
+    postSpasticResults(client);
+  }
   const londonNow = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/London' }));
   const londonTarget = new Date(londonNow);
   londonTarget.setHours(20, 0, 0, 0);
@@ -2576,20 +2590,7 @@ const handleSpastic = async (interaction) => {
   const sub = interaction.options.getSubcommand();
   const today = new Date().toISOString().slice(0, 10);
 
-  // Auto-tally previous day if date has changed and votes exist
-  if (spasticVotes.date && spasticVotes.date !== today && Object.keys(spasticVotes.votes).length > 0) {
-    const counts = {};
-    for (const votedId of Object.values(spasticVotes.votes)) {
-      counts[votedId] = (counts[votedId] || 0) + 1;
-    }
-    const [winnerId, winCount] = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
-    if (!spasticWins[winnerId]) spasticWins[winnerId] = 0;
-    spasticWins[winnerId]++;
-    saveSpasticWins();
-    spasticVotes = { date: today, votes: {} };
-    saveSpasticVotes();
-    await interaction.channel.send(`🏆 **Spastic of the Day** for ${spasticVotes.date || today} was <@${winnerId}> with ${winCount} vote${winCount === 1 ? '' : 's'}!`);
-  } else if (spasticVotes.date !== today) {
+  if (spasticVotes.date !== today) {
     spasticVotes = { date: today, votes: {} };
   }
 
@@ -2601,8 +2602,9 @@ const handleSpastic = async (interaction) => {
     if (target.bot) {
       return interaction.reply({ content: "Bots can't be Spastic of the Day.", ephemeral: true });
     }
+    const reason = interaction.options.getString('reason') || null;
     const already = spasticVotes.votes[interaction.user.id];
-    spasticVotes.votes[interaction.user.id] = target.id;
+    spasticVotes.votes[interaction.user.id] = { id: target.id, reason };
     saveSpasticVotes();
     const action = already ? 'changed their vote' : 'voted';
     await interaction.reply({ content: '✅ Vote recorded!', ephemeral: true });
