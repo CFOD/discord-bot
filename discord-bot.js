@@ -287,6 +287,7 @@ try { spasticVotes = JSON.parse(fs.readFileSync(SPASTIC_VOTES_PATH, 'utf8')); } 
 try { spasticWins = JSON.parse(fs.readFileSync(SPASTIC_WINS_PATH, 'utf8')); } catch {}
 function saveSpasticVotes() { fs.writeFileSync(SPASTIC_VOTES_PATH, JSON.stringify(spasticVotes, null, 2)); }
 function saveSpasticWins() { fs.writeFileSync(SPASTIC_WINS_PATH, JSON.stringify(spasticWins, null, 2)); }
+function savePermissions() { fs.writeFileSync(PERMISSIONS_PATH, JSON.stringify(permissions, null, 2)); }
 function checkGoogleQuota(n = 1) {
   const month = new Date().toISOString().slice(0, 7);
   if (googleUsage.month !== month) googleUsage = { month, count: 0 };
@@ -507,6 +508,8 @@ function loadPermissions() {
             if (!permissions.features) permissions.features = {};
             if (!permissions.features.ask) permissions.features.ask = { enabled: true, restrictedUsers: [] };
             if (!permissions.features.story) permissions.features.story = { enabled: true, restrictedUsers: [] };
+            const _featureDefaults = ['spastic','trivia','8ball','roulette','geoguessr','mood','gpsjam','radar','random_messages'];
+            for (const f of _featureDefaults) { if (!permissions.features[f]) permissions.features[f] = { enabled: true }; }
             if (!permissions.globalBlacklist) permissions.globalBlacklist = [];
         } else {
             console.error("permissions.json not found! Using defaults.");
@@ -577,6 +580,7 @@ const client = new Client({
 
 // ===== Random Server-Wide Messages =====
 async function sendRandomMessageToSpecificChannel(guild) {
+  if (!isFeatureEnabled("random_messages")) return;
   const channels = guild.channels.cache.filter(
     (channel) => config.randomMessageChannels.includes(channel.id) && channel.isTextBased()
   );
@@ -909,6 +913,31 @@ client.once("ready", async () => {
       ]
     },
     { name: "status", description: "Shows the current server status" },
+    {
+      name: "feature",
+      description: "Enable or disable bot features (owner only)",
+      options: [
+        {
+          name: "toggle",
+          description: "Toggle a feature on or off",
+          type: 1,
+          options: [{ name: "name", description: "Feature to toggle", type: 3, required: true, choices: [
+            { name: "Ask (AI questions)", value: "ask" },
+            { name: "Story", value: "story" },
+            { name: "Spastic of the Day", value: "spastic" },
+            { name: "Trivia", value: "trivia" },
+            { name: "8 Ball", value: "8ball" },
+            { name: "Roulette", value: "roulette" },
+            { name: "GeoGuessr", value: "geoguessr" },
+            { name: "Mood Analysis", value: "mood" },
+            { name: "GPS Jam", value: "gpsjam" },
+            { name: "Radar", value: "radar" },
+            { name: "Random Messages", value: "random_messages" },
+          ]}]
+        },
+        { name: "list", description: "Show the status of all features", type: 1 }
+      ]
+    },
     { name: "help", description: "Lists all available commands" },
     { name: "josep", description: "Make the fat Greek speak" },
     { name: "david", description: "Make retard speak" },
@@ -1074,6 +1103,10 @@ const executeCommand = async (interaction, command, successMessage) => {
   });
 };
 
+function isFeatureEnabled(name) {
+  return permissions.features?.[name]?.enabled !== false;
+}
+
 const hasPermission = (interaction, userId) => {
   if (interaction.user.id !== userId) {
     interaction.reply({ content: "You do not have permission to use this command.", ephemeral: true });
@@ -1096,6 +1129,7 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   switch (interaction.commandName) {
+    case "feature": return handleFeature(interaction);
     case "help": {
       const helpPages = [
         {
@@ -1436,6 +1470,7 @@ client.on("interactionCreate", async (interaction) => {
       break;
     }
     case "8ball": {
+      if (!isFeatureEnabled("8ball")) return interaction.reply({ content: '❌ This feature is currently disabled.', ephemeral: true });
       const question = interaction.options.getString("question");
 
       // ─── Default answers ───────────────────────────────────────────
@@ -1486,6 +1521,7 @@ client.on("interactionCreate", async (interaction) => {
       break;
     }
     case "trivia": {
+      if (!isFeatureEnabled("trivia")) return interaction.reply({ content: '❌ This feature is currently disabled.', ephemeral: true });
       const TRIVIA_COOLDOWN = 30 * 1000;
       const lastTrivia = triviaCooldowns.get(interaction.channelId) || 0;
       const triviaRemaining = TRIVIA_COOLDOWN - (Date.now() - lastTrivia);
@@ -1575,6 +1611,7 @@ client.on("interactionCreate", async (interaction) => {
       break;
     }
     case "roulette": {
+      if (!isFeatureEnabled("roulette")) return interaction.reply({ content: '❌ This feature is currently disabled.', ephemeral: true });
       const ROULETTE_COOLDOWN = 5 * 60 * 1000;
       if (!rageModeActive) {
         const lastUsed = rouletteCooldowns.get(interaction.user.id) || 0;
@@ -1762,6 +1799,7 @@ Answer wrong → YOU get **${durationLabel}**.
       break;
     }
     case "radar": {
+      if (!isFeatureEnabled("radar")) return interaction.reply({ content: '❌ This feature is currently disabled.', ephemeral: true });
       const countryInput = interaction.options.getString("country").toLowerCase().trim();
       const bbox = COUNTRY_BBOXES[countryInput];
       if (!bbox) {
@@ -2015,6 +2053,7 @@ Answer wrong → YOU get **${durationLabel}**.
       break;
     }
     case "usermood": {
+      if (!isFeatureEnabled("mood")) return interaction.reply({ content: '❌ This feature is currently disabled.', ephemeral: true });
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey) return interaction.reply({ content: "The AI feature is not configured.", ephemeral: true });
 
@@ -2060,6 +2099,7 @@ Answer wrong → YOU get **${durationLabel}**.
       break;
     }
     case "mood": {
+      if (!isFeatureEnabled("mood")) return interaction.reply({ content: '❌ This feature is currently disabled.', ephemeral: true });
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey) {
         return interaction.reply({ content: "The AI feature is not configured on the server.", ephemeral: true });
@@ -2207,6 +2247,7 @@ Answer wrong → YOU get **${durationLabel}**.
     }
 
     case "gpsjam": {
+      if (!isFeatureEnabled("gpsjam")) return interaction.reply({ content: '❌ This feature is currently disabled.', ephemeral: true });
       await interaction.deferReply();
       try {
         let h3 = null;
@@ -2586,6 +2627,34 @@ function scheduleSpasticResults(client) {
   }, msUntil);
   console.log(`[Spastic] Results scheduled in ${Math.round(msUntil/60000)}m`);
 }
+
+const FEATURE_LABELS = {
+  ask: 'Ask (AI questions)', story: 'Story', spastic: 'Spastic of the Day',
+  trivia: 'Trivia', '8ball': '8 Ball', roulette: 'Roulette', geoguessr: 'GeoGuessr',
+  mood: 'Mood Analysis', gpsjam: 'GPS Jam', radar: 'Radar', random_messages: 'Random Messages',
+};
+
+const handleFeature = async (interaction) => {
+  if (interaction.user.id !== config.ownerId) {
+    return interaction.reply({ content: 'Only the owner can manage features.', ephemeral: true });
+  }
+  const sub = interaction.options.getSubcommand();
+  if (sub === 'toggle') {
+    const name = interaction.options.getString('name');
+    if (!permissions.features[name]) permissions.features[name] = { enabled: true };
+    permissions.features[name].enabled = !permissions.features[name].enabled;
+    savePermissions();
+    const state = permissions.features[name].enabled ? '✅ Enabled' : '❌ Disabled';
+    return interaction.reply({ content: `**${FEATURE_LABELS[name] || name}** — ${state}`, ephemeral: true });
+  }
+  if (sub === 'list') {
+    const lines = Object.entries(FEATURE_LABELS).map(([key, label]) => {
+      const on = isFeatureEnabled(key);
+      return `${on ? '✅' : '❌'} ${label}`;
+    });
+    return interaction.reply({ content: lines.join('\n'), ephemeral: true });
+  }
+};
 
 const handleSpastic = async (interaction) => {
   const sub = interaction.options.getSubcommand();
