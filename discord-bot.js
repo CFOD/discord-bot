@@ -2548,6 +2548,7 @@ async function postSpasticResults(client) {
   if (!spasticWins[winnerId]) spasticWins[winnerId] = 0;
   spasticWins[winnerId]++;
   saveSpasticWins();
+  const totalVoters = Object.keys(spasticVotes.votes).length;
   spasticVotes = { date: today, votes: {} };
   saveSpasticVotes();
   const medals = ['🥇', '🥈', '🥉'];
@@ -2558,7 +2559,7 @@ async function postSpasticResults(client) {
     .setTitle(`🤡 Spastic of the Day — ${announceDate}`)
     .setDescription(lines)
     .setColor(0xFF6B35)
-    .setFooter({ text: `${Object.keys(spasticVotes.votes).length || Object.keys(counts).length} votes cast` });
+    .setFooter({ text: `${totalVoters} ${totalVoters === 1 ? 'person' : 'people'} voted today` });
   try {
     const guild = await client.guilds.fetch(config.relayServerId);
     const channel = await guild.channels.fetch(config.relayChannelId);
