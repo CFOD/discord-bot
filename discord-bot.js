@@ -3078,20 +3078,38 @@ async function pollVolantaFlights(client) {
           const opts = [
             "I'm calling the NTSB.",
             "Are you sure you're qualified to do this?",
-            "Runway inspection please! That crater isn't gonna fill itself.",
-            "Gonna need to get an engineering inspection after that one!",
+            "Runway inspection requested. And a structural survey.",
+            "Gonna need an engineering inspection after that one.",
             "The black box is on fire. Literally.",
             "That wasn't a landing, that was a controlled crash.",
             "Passengers are suing. All of them.",
+            "Tower: \"Are you okay?\" Celestial: \"Define okay.\"",
+            "The runway would like to press charges.",
+            "Sir this is a Boeing not a lawn dart.",
+            "That landing was so hard it showed up on seismographs.",
+            "Gear collapse probability: high. Very high.",
+            "We're going to need a bigger repair bill.",
+            "The ground crew are reconsidering their career choices.",
+            "This flight has been flagged for a safety review.",
           ];
           celestialComment = opts[Math.floor(Math.random() * opts.length)];
         } else if (abs >= 400) {
           const opts = [
-            "Did you just... attack the runway?",
+            "Did you just attack the runway?",
             "Gear collapse imminent. Maybe. Probably.",
             "I've seen smoother arrivals from cargo drops.",
             "The passengers have filed a formal complaint.",
             "That's one way to stop a plane I suppose.",
+            "The overhead bins are now on the floor.",
+            "Firm but survivable. Barely.",
+            "The airline would like a word with you.",
+            "Several passengers have asked to deplane immediately.",
+            "Coffee? All over the ceiling now.",
+            "The co-pilot has gone quiet.",
+            "Not a greaser. Not even close.",
+            "The ground crew saw that. They're not impressed.",
+            "That's going in the report.",
+            "You've been added to the simulator training list.",
           ];
           celestialComment = opts[Math.floor(Math.random() * opts.length)];
         } else if (abs >= 200) {
@@ -3101,6 +3119,16 @@ async function pollVolantaFlights(client) {
             "The passengers would like a word.",
             "Solid. Very solid. Too solid.",
             "Not a bounce, more of a thud.",
+            "The cabin crew are giving you a look.",
+            "Felt that one in economy and business.",
+            "Your passengers have left a 3 star review.",
+            "Not illegal. Just uncomfortable.",
+            "The wheels are filing a complaint.",
+            "Bold landing strategy. Questionable, but bold.",
+            "A few people spilled their drinks. Just saying.",
+            "The flight attendants have seen better.",
+            "You'll want to check those tyres.",
+            "Not your finest work.",
           ];
           celestialComment = opts[Math.floor(Math.random() * opts.length)];
         }
@@ -3123,9 +3151,8 @@ async function pollVolantaFlights(client) {
         .setTimestamp()
         .setFooter({ text: `Volanta · ${aircraftTitle}` })
         .setURL(`https://fly.volanta.app/profile/${user.username}/flights`);
-      const sendOpts = { embeds: [embed] };
-      if (celestialComment) sendOpts.content = `💬 *"${celestialComment}"*`;
-      await channel.send(sendOpts);
+      if (celestialComment) embed.addFields({ name: '💬 Verdict', value: `*"${celestialComment}"*` });
+      await channel.send({ embeds: [embed] });
     } catch (e) { console.error(`Volanta poll error (${user.username}):`, e.message); }
   }
 }
