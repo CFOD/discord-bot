@@ -3064,7 +3064,47 @@ async function pollVolantaFlights(client) {
       const hrs = Math.floor(flightTimeSec / 3600);
       const mins = Math.floor((flightTimeSec % 3600) / 60);
       const duration = flightTimeSec ? `${hrs}h ${mins}m` : 'Unknown';
-      const landingRate = flight.landingRate ? `${Math.round(flight.landingRate)} fpm` : 'Unknown';
+      const CELESTIAL_ID = 'c8dce899-5b6b-4534-3fb9-08dca7f6f6ee';
+      let rawLandingRate = flight.landingRate ? Math.round(flight.landingRate) : null;
+      if (rawLandingRate !== null && user.userId === CELESTIAL_ID) {
+        const pct = 1 + (Math.random() * 0.25 + 0.10);
+        rawLandingRate = Math.round(rawLandingRate * pct);
+      }
+      const landingRate = rawLandingRate !== null ? `${rawLandingRate} fpm` : 'Unknown';
+      let celestialComment = null;
+      if (user.userId === CELESTIAL_ID && rawLandingRate !== null) {
+        const abs = Math.abs(rawLandingRate);
+        if (abs >= 600) {
+          const opts = [
+            "I'm calling the NTSB.",
+            "Are you sure you're qualified to do this?",
+            "Runway inspection please! That crater isn't gonna fill itself.",
+            "Gonna need to get an engineering inspection after that one!",
+            "The black box is on fire. Literally.",
+            "That wasn't a landing, that was a controlled crash.",
+            "Passengers are suing. All of them.",
+          ];
+          celestialComment = opts[Math.floor(Math.random() * opts.length)];
+        } else if (abs >= 400) {
+          const opts = [
+            "Did you just... attack the runway?",
+            "Gear collapse imminent. Maybe. Probably.",
+            "I've seen smoother arrivals from cargo drops.",
+            "The passengers have filed a formal complaint.",
+            "That's one way to stop a plane I suppose.",
+          ];
+          celestialComment = opts[Math.floor(Math.random() * opts.length)];
+        } else if (abs >= 200) {
+          const opts = [
+            "A bit firm there mate.",
+            "The overhead bins didn't stand a chance.",
+            "The passengers would like a word.",
+            "Solid. Very solid. Too solid.",
+            "Not a bounce, more of a thud.",
+          ];
+          celestialComment = opts[Math.floor(Math.random() * opts.length)];
+        }
+      }
       const fuelBurn = flight.fuelBurn ? `${Math.round(flight.fuelBurn).toLocaleString()} kg` : null;
       const avgSpeed = (flight.distanceFlownInNauticalMiles && flightTimeSec) ? `${Math.round(flight.distanceFlownInNauticalMiles / (flightTimeSec / 3600))} kt` : null;
       const embed = new EmbedBuilder()
@@ -3083,7 +3123,9 @@ async function pollVolantaFlights(client) {
         .setTimestamp()
         .setFooter({ text: `Volanta · ${aircraftTitle}` })
         .setURL(`https://fly.volanta.app/profile/${user.username}/flights`);
-      await channel.send({ embeds: [embed] });
+      const sendOpts = { embeds: [embed] };
+      if (celestialComment) sendOpts.content = `💬 *"${celestialComment}"*`;
+      await channel.send(sendOpts);
     } catch (e) { console.error(`Volanta poll error (${user.username}):`, e.message); }
   }
 }
