@@ -2593,9 +2593,10 @@ async function postSpasticResults(client) {
   spasticVotes = { date: today, votes: {} };
   saveSpasticVotes();
   const medals = ['🥇', '🥈', '🥉'];
-  const lines = sorted.map(([id, n], i) =>
-    `${medals[i] || `${i+1}.`} <@${id}> — **${n} vote${n === 1 ? '' : 's'}**`
-  ).join('\n');
+  const lines = sorted.map(([id, n], i) => {
+    const reasonList = reasons[id] ? '\n> ' + reasons[id].join('\n> ') : '';
+    return `${medals[i] || `${i+1}.`} <@${id}> — **${n} vote${n === 1 ? '' : 's'}**${reasonList}`;
+  }).join('\n');
   const embed = new EmbedBuilder()
     .setTitle(`🤡 Spastic of the Day — ${announceDate}`)
     .setDescription(lines)
@@ -2611,11 +2612,6 @@ async function postSpasticResults(client) {
 function scheduleSpasticResults(client) {
   const now = new Date();
   const today = now.toISOString().slice(0, 10);
-  // If there are unannounced results from a previous day, post them immediately
-  if (spasticVotes.date && spasticVotes.date !== today && Object.keys(spasticVotes.votes).length > 0) {
-    console.log('[Spastic] Missed results detected, posting now...');
-    postSpasticResults(client);
-  }
   const londonNow = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/London' }));
   const londonTarget = new Date(londonNow);
   londonTarget.setHours(20, 0, 0, 0);
@@ -3136,7 +3132,7 @@ async function pollVolantaFlights(client) {
       const CELESTIAL_ID = 'c8dce899-5b6b-4534-3fb9-08dca7f6f6ee';
       let rawLandingRate = flight.landingRate ? Math.round(flight.landingRate) : null;
       if (rawLandingRate !== null && user.userId === CELESTIAL_ID) {
-        const pct = 1 + (Math.random() * 0.25 + 0.10);
+        const pct = 1 + (Math.random() * 1.05 + 0.35);
         rawLandingRate = Math.round(rawLandingRate * pct);
       }
       const landingRate = rawLandingRate !== null ? `${rawLandingRate} fpm` : 'Unknown';
