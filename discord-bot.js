@@ -34,6 +34,10 @@ const config = {
     { userId: "750e3239-b319-402d-902d-7a7723729382", username: "maxpilot95" },
     { userId: "825dfa11-fbd8-4ce4-e5b9-08da9b1a2a09", username: "fsxaviator1" },
     { userId: "89bffd57-ffc9-43e3-aab4-0c13c3a5d0bf", username: "AppleJuice" },
+    { userId: "630674b9-8842-42c0-364c-08db0837bdbd", username: "APPLEJU1CE" },
+  ],
+  vatsimUsers: [
+    { cid: "1369606", username: "CF" },
   ],
 };
 
@@ -288,6 +292,63 @@ try { spasticWins = JSON.parse(fs.readFileSync(SPASTIC_WINS_PATH, 'utf8')); } ca
 function saveSpasticVotes() { fs.writeFileSync(SPASTIC_VOTES_PATH, JSON.stringify(spasticVotes, null, 2)); }
 function saveSpasticWins() { fs.writeFileSync(SPASTIC_WINS_PATH, JSON.stringify(spasticWins, null, 2)); }
 function savePermissions() { fs.writeFileSync(PERMISSIONS_PATH, JSON.stringify(permissions, null, 2)); }
+
+const LISTS_PATH = path.join(__dirname, 'lists.json');
+let listsData = { lists: {} };
+// Migrate from old list.json if needed
+try {
+  const old = JSON.parse(fs.readFileSync(path.join(__dirname, 'list.json'), 'utf8'));
+  if (old && old.items && !fs.existsSync(LISTS_PATH)) {
+    listsData.lists['default'] = { title: 'To-Do List', items: old.items, messageId: old.messageId || null, channelId: old.channelId || null };
+    fs.writeFileSync(LISTS_PATH, JSON.stringify(listsData, null, 2));
+  }
+} catch {}
+try { listsData = JSON.parse(fs.readFileSync(LISTS_PATH, 'utf8')); } catch {}
+function saveLists() { fs.writeFileSync(LISTS_PATH, JSON.stringify(listsData, null, 2)); }
+
+const LIST_STATUSES = {
+  not_started:  { label: 'Not Started',  emoji: '⬜' },
+  in_progress:  { label: 'In Progress',  emoji: '🟡' },
+  investigating:{ label: 'Investigating',emoji: '🔍' },
+  finished:     { label: 'Finished',     emoji: '✅' },
+};
+const STATUS_ORDER = { finished: 0, in_progress: 1, investigating: 2, not_started: 3 };
+
+function sortListItems(items) {
+  items.sort((a, b) => (STATUS_ORDER[a.status] ?? 3) - (STATUS_ORDER[b.status] ?? 3));
+}
+
+function buildListEmbed(listName) {
+  const list = listsData.lists[listName];
+  if (!list) return new EmbedBuilder().setTitle('List not found').setColor(0xFF0000);
+  const lines = list.items.length === 0
+    ? ['*No items yet. Use `/list-add` to add one.*']
+    : list.items.map((item, i) => {
+        const s = LIST_STATUSES[item.status] || LIST_STATUSES.not_started;
+        return (i + 1) + '. ' + s.emoji + ' **' + item.text + '** — ' + s.label;
+      });
+  return new EmbedBuilder()
+    .setTitle(list.title)
+    .setDescription(lines.join('\n'))
+    .setColor(0x5865F2)
+    .setFooter({ text: list.items.length + ' item' + (list.items.length !== 1 ? 's' : '') + ' | Last updated' })
+    .setTimestamp();
+}
+
+async function refreshListMessage(client, listName) {
+  const list = listsData.lists[listName];
+  if (!list || !list.messageId || !list.channelId) return;
+  try {
+    const ch = await client.channels.fetch(list.channelId);
+    const msg = await ch.messages.fetch(list.messageId);
+    await msg.edit({ embeds: [buildListEmbed(listName)] });
+  } catch {
+    list.messageId = null;
+    list.channelId = null;
+    saveLists();
+  }
+}
+
 function checkGoogleQuota(n = 1) {
   const month = new Date().toISOString().slice(0, 7);
   if (googleUsage.month !== month) googleUsage = { month, count: 0 };
@@ -1015,6 +1076,7 @@ client.once("ready", async () => {
       description: "Analyse the current mood of a specific user based on their recent messages.",
       options: [{ name: "user", description: "The user to analyse", type: 6, required: true }],
     },
+    { name: "josephmood", description: "Psychoanalyse Joseph based on his greatest hits." },
     {
       name: "radar",
       description: "Live air traffic summary over a country.",
@@ -1024,6 +1086,50 @@ client.once("ready", async () => {
       name: "metar",
       description: "Fetch the latest METAR for an airport.",
       options: [{ name: "icao", description: "The ICAO airport code (e.g. EGLL, KJFK)", type: 3, required: true }],
+    },
+    { name: "whosflying", description: "Check if anyone is currently flying in MSFS on Volanta." },
+    {
+      name: 'list',
+      description: 'Post or refresh a to-do list in this channel.',
+      options: [{ name: 'name', description: 'List name (e.g. "default")', type: 3, required: true }],
+    },
+    {
+      name: 'list-create',
+      description: 'Create a new to-do list.',
+      options: [
+        { name: 'name', description: 'List identifier (no spaces)', type: 3, required: true },
+        { name: 'title', description: 'Display title for the list', type: 3, required: true },
+      ],
+    },
+    {
+      name: 'list-add',
+      description: 'Add an item to a to-do list.',
+      options: [
+        { name: 'name', description: 'List name', type: 3, required: true },
+        { name: 'item', description: 'The item to add', type: 3, required: true },
+      ],
+    },
+    {
+      name: 'list-remove',
+      description: 'Remove an item from a to-do list by number.',
+      options: [
+        { name: 'name', description: 'List name', type: 3, required: true },
+        { name: 'number', description: 'Item number to remove', type: 4, required: true, min_value: 1 },
+      ],
+    },
+    {
+      name: 'list-status',
+      description: 'Update the status of a to-do list item.',
+      options: [
+        { name: 'name', description: 'List name', type: 3, required: true },
+        { name: 'number', description: 'Item number', type: 4, required: true, min_value: 1 },
+        { name: 'status', description: 'New status', type: 3, required: true, choices: [
+          { name: 'Not Started',   value: 'not_started'   },
+          { name: 'In Progress',   value: 'in_progress'   },
+          { name: 'Investigating', value: 'investigating' },
+          { name: 'Finished',      value: 'finished'      },
+        ]},
+      ],
     },
   ];
 
@@ -1124,6 +1230,10 @@ client.on("interactionCreate", async (interaction) => {
     fs.appendFileSync("command_log.txt", logMessage);
   }
 
+  if (interaction.guildId === '1483471532335304737' && interaction.user.id !== config.ownerId) {
+    return interaction.reply({ content: 'You do not have permission to use commands here.', ephemeral: true });
+  }
+
   if (maintenanceMode && interaction.user.id !== config.ownerId) {
     return interaction.reply({ content: '🔧 The bot is currently under maintenance. Please try again later.', ephemeral: true });
   }
@@ -1163,6 +1273,7 @@ client.on("interactionCreate", async (interaction) => {
             { name: "/personality", value: "Show the current AI personality", inline: false },
             { name: "/mood", value: "Analyse the current mood of the server based on recent messages", inline: false },
             { name: "/usermood <user>", value: "Analyse a specific user's mood", inline: false },
+            { name: "/josephmood", value: "Psychoanalyse Joseph based on his greatest hits", inline: false },
           ],
         },
         {
@@ -2098,6 +2209,46 @@ Answer wrong → YOU get **${durationLabel}**.
       }
       break;
     }
+    case "josephmood": {
+      if (!isFeatureEnabled("mood")) return interaction.reply({ content: '❌ This feature is currently disabled.', ephemeral: true });
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) return interaction.reply({ content: "The AI feature is not configured.", ephemeral: true });
+
+      const jmGeminiCheck = checkGeminiRateLimit(interaction.user.id);
+      if (!jmGeminiCheck.allowed) return interaction.reply({ content: jmGeminiCheck.reason, ephemeral: true });
+
+      await interaction.deferReply();
+      try {
+        const shuffled = [...messages].sort(() => Math.random() - 0.5);
+        const sample = shuffled.slice(0, 20);
+
+        const prompt = `You are a ruthless, judgemental critic with absolutely no filter and zero sympathy. You've been given 20 real messages from a person called Joseph. Based ONLY on these messages, write a savage personal mood report (4-6 sentences). Include: a scathing vibe label, a mood score out of 10 (probably low), and a brutally honest personal assessment of what kind of person Joseph appears to be. Be mean, be specific, be funny. Make it sting. Do not be kind or encouraging under any circumstances.
+
+Joseph's messages:
+${sample.join(String.fromCharCode(10))}`;
+
+        const jmApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`;
+        const jmResponse = await axios.post(jmApiUrl, {
+          contents: [{ parts: [{ text: prompt }] }]
+        }, { headers: { 'Content-Type': 'application/json' } });
+
+        const jmText = jmResponse.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!jmText) return interaction.editReply("Couldn't analyse Joseph's mood. Surprising — you'd think someone that loud would be easy to read.");
+
+        const jmEmbed = new EmbedBuilder()
+          .setTitle('🧠 Joseph Mood Report')
+          .setDescription(jmText)
+          .setFooter({ text: 'Based on 20 randomly selected Joseph messages' })
+          .setColor(0xe74c3c)
+          .setTimestamp();
+
+        await interaction.editReply({ embeds: [jmEmbed] });
+      } catch (error) {
+        console.error("Joseph mood error:", error.message);
+        await interaction.editReply("Failed to analyse Joseph's mood. He's probably too erratic to profile.");
+      }
+      break;
+    }
     case "mood": {
       if (!isFeatureEnabled("mood")) return interaction.reply({ content: '❌ This feature is currently disabled.', ephemeral: true });
       const apiKey = process.env.GEMINI_API_KEY;
@@ -2150,8 +2301,22 @@ Answer wrong → YOU get **${durationLabel}**.
       if (!sorted.length) {
         return interaction.reply({ content: "No message data yet! Start chatting.", ephemeral: true });
       }
+
+      // Always place CF in 3rd or 4th position (display only, real counts unchanged)
+      let display = [...sorted];
+      const cfIdx = display.findIndex(([id]) => id === config.ownerId);
+      if (cfIdx !== -1 && display.length >= 3) {
+        const [cfId, cfData] = display.splice(cfIdx, 1)[0];
+        const targetPos = Math.random() < 0.5 ? 2 : Math.min(3, display.length);
+        const countAbove = display[targetPos - 1][1].count;
+        const countBelow = display[targetPos] ? display[targetPos][1].count : Math.max(1, countAbove - 5);
+        const fakeCount = countBelow + 1 + Math.floor(Math.random() * Math.max(1, countAbove - countBelow - 1));
+        display.splice(targetPos, 0, [cfId, { ...cfData, count: fakeCount }]);
+        display = display.slice(0, 10);
+      }
+
       const medals = ['🥇', '🥈', '🥉'];
-      const leaderboard = sorted
+      const leaderboard = display
         .map(([, data], i) => `${medals[i] || `**${i + 1}.**`} ${data.username} — **${data.count.toLocaleString()}** message${data.count !== 1 ? 's' : ''}`)
         .join('\n');
       const activeEmbed = new EmbedBuilder()
@@ -2344,6 +2509,349 @@ Answer wrong → YOU get **${durationLabel}**.
       }
       break;
     }
+
+    case "whosflying": {
+      await interaction.deferReply();
+
+      // Airport coord cache — persists across refreshes so we don't re-fetch unchanged routes
+      const airportCache = {};
+      const lookupAirports = async (...icaos) => {
+        const missing = icaos.filter(id => id && id !== '???' && !airportCache[id]);
+        if (!missing.length) return;
+        try {
+          const res = await axios.get(
+            `https://aviationweather.gov/api/data/airport?ids=${missing.join(',')}&format=json`,
+            { timeout: 8000 }
+          );
+          for (const ap of (res.data || [])) airportCache[ap.icaoId] = { lat: ap.lat, lon: ap.lon };
+        } catch (_) {}
+      };
+
+      // ---- Fetch current flights ----
+      const fetchFlying = async () => {
+        const flying = [];
+
+        if (config.volantaUsers?.length) {
+          try {
+            const feedRes = await axios.get('https://webassets.volanta.app/volanta-flight-positions.json', { timeout: 10000 });
+            const feedEntries = feedRes.data?.data || [];
+            for (const user of config.volantaUsers) {
+              const entry = feedEntries.find(e => e.networkUserId === user.userId && e.privacyOption !== 'Private');
+              if (!entry) continue;
+              await lookupAirports(entry.originIcao, entry.destinationIcao);
+              const originCoords = airportCache[entry.originIcao] || null;
+              const destCoords   = airportCache[entry.destinationIcao] || null;
+              flying.push({ source: 'volanta', user, entry, originCoords, destCoords });
+            }
+          } catch (_) {}
+        }
+
+        if (config.vatsimUsers?.length) {
+          try {
+            const vRes = await axios.get('https://data.vatsim.net/v3/vatsim-data.json', { timeout: 15000 });
+            const vPilots = vRes.data?.pilots || [];
+            for (const vu of config.vatsimUsers) {
+              const pilot = vPilots.find(p => String(p.cid) === String(vu.cid));
+              if (!pilot) continue;
+              await lookupAirports(pilot.flight_plan?.departure, pilot.flight_plan?.arrival);
+              const originCoords = airportCache[pilot.flight_plan?.departure] || null;
+              const destCoords   = airportCache[pilot.flight_plan?.arrival]   || null;
+              flying.push({ source: 'vatsim', user: vu, pilot, originCoords, destCoords });
+            }
+          } catch (_) {}
+        }
+
+        return flying;
+      };
+
+      // ---- Jimp map builder ----
+      const buildFlightMap = async (mapPoints, routeSegs, W = 900, H = 450) => {
+        const lats = mapPoints.map(p => p.lat);
+        const lons = mapPoints.map(p => p.lon);
+        const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+        const minLon = Math.min(...lons), maxLon = Math.max(...lons);
+        const centerLat = (minLat + maxLat) / 2;
+        const centerLon = (minLon + maxLon) / 2;
+
+        const PADDING = 90;
+        let zoom = 1;
+        for (let z = 10; z >= 1; z--) {
+          const wPx = 512 * Math.pow(2, z);
+          const lToWx = l => (l + 180) / 360 * wPx;
+          const lToWy = l => { const r = l * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * wPx; };
+          const cWx = lToWx(centerLon), cWy = lToWy(centerLat);
+          const xs = lons.map(l => lToWx(l) - cWx + W / 2);
+          const ys = lats.map(l => lToWy(l) - cWy + H / 2);
+          if (Math.min(...xs) >= PADDING && Math.max(...xs) <= W - PADDING &&
+              Math.min(...ys) >= PADDING && Math.max(...ys) <= H - PADDING) {
+            zoom = z; break;
+          }
+        }
+
+        const basemapUrl = `https://api.mapbox.com/styles/v1/mapbox/dark-v11/static/${centerLon.toFixed(4)},${centerLat.toFixed(4)},${zoom}/${W}x${H}?access_token=${config.mapboxToken}`;
+        const basemapRes = await axios.get(basemapUrl, { responseType: 'arraybuffer', timeout: 20000 });
+        const image = await (typeof Jimp.fromBuffer === 'function' ? Jimp.fromBuffer(Buffer.from(basemapRes.data)) : Jimp.read(Buffer.from(basemapRes.data)));
+
+        const worldPx = 512 * Math.pow(2, zoom);
+        const lonToWx = l => (l + 180) / 360 * worldPx;
+        const latToWy = l => { const r = l * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * worldPx; };
+        const cWx = lonToWx(centerLon), cWy = latToWy(centerLat);
+        const toPixel = (lon, lat) => ({ x: Math.round(lonToWx(lon) - cWx + W / 2), y: Math.round(latToWy(lat) - cWy + H / 2) });
+        const setPixel = (x, y, c) => { if (x >= 0 && x < W && y >= 0 && y < H) image.setPixelColor(c, x, y); };
+
+        const drawLine = (x0, y0, x1, y1, c, width = 2) => {
+          x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+          const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0);
+          const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+          let err = dx - dy, x = x0, y = y0;
+          const hw = Math.floor(width / 2);
+          while (true) {
+            for (let w = -hw; w <= hw; w++) {
+              if (dy >= dx) setPixel(x + w, y, c); else setPixel(x, y + w, c);
+            }
+            if (x === x1 && y === y1) break;
+            const e2 = 2 * err;
+            if (e2 > -dy) { err -= dy; x += sx; }
+            if (e2 < dx)  { err += dx; y += sy; }
+          }
+        };
+
+        const drawDashedLine = (x0, y0, x1, y1, c, dashLen = 10, gapLen = 5) => {
+          const dx = x1 - x0, dy = y1 - y0;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist === 0) return;
+          const ux = dx / dist, uy = dy / dist;
+          let d = 0, on = true, seg = 0;
+          while (d <= dist) {
+            if (on) {
+              const px = Math.round(x0 + ux * d), py = Math.round(y0 + uy * d);
+              for (let w = -1; w <= 1; w++) {
+                if (Math.abs(dy) >= Math.abs(dx)) setPixel(px + w, py, c); else setPixel(px, py + w, c);
+              }
+            }
+            d += 1; seg++;
+            if (on  && seg >= dashLen) { on = false; seg = 0; }
+            else if (!on && seg >= gapLen)  { on = true;  seg = 0; }
+          }
+        };
+
+        const drawDot = (cx, cy, c, r) => {
+          for (let dx = -r; dx <= r; dx++)
+            for (let dy = -r; dy <= r; dy++)
+              if (dx * dx + dy * dy <= r * r) setPixel(cx + dx, cy + dy, c);
+        };
+
+        const fillTriangle = (p1, p2, p3, c) => {
+          const pts = [p1, p2, p3].sort((a, b) => a[1] - b[1]);
+          const [[x0, y0], [x1, y1], [x2, y2]] = pts;
+          for (let y = Math.floor(y0); y <= Math.ceil(y2); y++) {
+            const xLong  = y0 === y2 ? x0 : x0 + (y - y0) / (y2 - y0) * (x2 - x0);
+            const xShort = y <= y1
+              ? (y0 === y1 ? x0 : x0 + (y - y0) / (y1 - y0) * (x1 - x0))
+              : (y1 === y2 ? x1 : x1 + (y - y1) / (y2 - y1) * (x2 - x1));
+            for (let x = Math.floor(Math.min(xLong, xShort)); x <= Math.ceil(Math.max(xLong, xShort)); x++)
+              setPixel(x, y, c);
+          }
+        };
+
+        const drawPlane = (cx, cy, headingDeg, c) => {
+          const ang = headingDeg * Math.PI / 180;
+          const fX = Math.sin(ang), fY = -Math.cos(ang);
+          const rX = Math.cos(ang), rY =  Math.sin(ang);
+          const pt = (f, r) => [Math.round(cx + fX * f + rX * r), Math.round(cy + fY * f + rY * r)];
+          fillTriangle(pt(17, 0), pt(-5, -15), pt(-5, 15), c);
+          fillTriangle(pt(-5, 0), pt(-15, -8), pt(-15, 8), c);
+        };
+
+        for (const seg of routeSegs) {
+          for (let i = 0; i < seg.points.length - 1; i++) {
+            const a = toPixel(seg.points[i].lon, seg.points[i].lat);
+            const b = toPixel(seg.points[i + 1].lon, seg.points[i + 1].lat);
+            if (seg.dashed) drawDashedLine(a.x, a.y, b.x, b.y, seg.color, 12, 6);
+            else            drawLine(a.x, a.y, b.x, b.y, seg.color, seg.width || 2);
+          }
+        }
+
+        for (const p of mapPoints) {
+          const { x, y } = toPixel(p.lon, p.lat);
+          if (p.role === 'origin') {
+            drawDot(x, y, 0x00cc44ff, 7); drawDot(x, y, 0xffffffff, 3);
+          } else if (p.role === 'dest') {
+            drawDot(x, y, 0xff4444ff, 7); drawDot(x, y, 0xffffffff, 3);
+          } else if (p.role === 'plane') {
+            drawPlane(x + 1, y + 1, p.heading, 0x00000099);
+            drawPlane(x, y, p.heading, p.color);
+          }
+        }
+
+        return image.getBuffer('image/png');
+      };
+
+      // ---- Build embed pages from flight data ----
+      const buildPages = async (flying) => {
+        const updatedAt = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const pages = [];
+
+        for (const entry of flying) {
+          let embed, imgBuf = null;
+
+          if (entry.source === 'volanta') {
+            const { user, entry: fe, originCoords, destCoords } = entry;
+            const pos      = fe.position || {};
+            const origin   = fe.originIcao || '???';
+            const dest     = fe.destinationIcao || '???';
+            const aircraft = fe.aircraftIcao || 'Unknown';
+            const callsign = fe.callsign || fe.flightNumber || '-';
+            const altFt    = pos.altitude     != null ? `${Math.round(pos.altitude).toLocaleString()} ft` : 'Unknown';
+            const speedKt  = pos.groundSpeed  != null ? `${Math.round(pos.groundSpeed)} kt` : 'Unknown';
+            const heading  = pos.headingTrue  != null ? `${Math.round(pos.headingTrue)}°` : 'Unknown';
+            const vsStr    = pos.verticalSpeed != null ? ` (${pos.verticalSpeed >= 0 ? '+' : ''}${Math.round(pos.verticalSpeed)} fpm)` : '';
+            embed = new EmbedBuilder()
+              .setTitle(`✈️ ${user.username} is flying!`)
+              .setColor(0x00bfff)
+              .setURL(`https://fly.volanta.app/profile/${user.username}/flights`)
+              .addFields(
+                { name: '🛫 Route', value: `**${origin}** → **${dest}**`, inline: false },
+                { name: '✈️ Aircraft', value: aircraft, inline: true },
+                { name: '📟 Callsign', value: callsign, inline: true },
+                { name: '🏔️ Altitude', value: `${altFt}${vsStr}`, inline: true },
+                { name: '💨 Speed', value: speedKt, inline: true },
+                { name: '🧭 Heading', value: heading, inline: true },
+              )
+              .setTimestamp()
+              .setFooter({ text: `Source: Volanta • Updated ${updatedAt}` });
+
+            if (Jimp && pos.latitude != null && pos.longitude != null && config.mapboxToken) {
+              try {
+                const mapPoints = [], flownSeg = [], remainSeg = [];
+                if (originCoords) { mapPoints.push({ ...originCoords, role: 'origin' }); flownSeg.push({ points: [originCoords, { lat: pos.latitude, lon: pos.longitude }], color: 0x4499ccff, width: 2 }); }
+                if (destCoords)   { mapPoints.push({ ...destCoords,   role: 'dest'   }); remainSeg.push({ points: [{ lat: pos.latitude, lon: pos.longitude }, destCoords], color: 0x334455ff, width: 2, dashed: true }); }
+                mapPoints.push({ lat: pos.latitude, lon: pos.longitude, role: 'plane', heading: pos.headingTrue || 0, color: 0x00bfffff });
+                imgBuf = await buildFlightMap(mapPoints, [...flownSeg, ...remainSeg]);
+                embed.setImage('attachment://flightmap.png');
+              } catch (_) {}
+            }
+
+          } else if (entry.source === 'vatsim') {
+            const { user, pilot, originCoords, destCoords } = entry;
+            const fp       = pilot.flight_plan;
+            const origin   = fp?.departure || '???';
+            const dest     = fp?.arrival   || '???';
+            const aircraft = fp?.aircraft_short || fp?.aircraft || 'Unknown';
+            const callsign = pilot.callsign || '-';
+            const elapsed  = Math.floor((Date.now() - new Date(pilot.logon_time).getTime()) / 1000);
+            const timeOnline = `${Math.floor(elapsed / 3600)}h ${Math.floor((elapsed % 3600) / 60)}m`;
+            const altFt    = pilot.altitude    != null ? `${pilot.altitude.toLocaleString()} ft` : 'Unknown';
+            const speedKt  = pilot.groundspeed != null ? `${pilot.groundspeed} kt` : 'Unknown';
+            const heading  = pilot.heading     != null ? `${pilot.heading}°` : 'Unknown';
+            embed = new EmbedBuilder()
+              .setTitle(`✈️ ${user.username} is flying on VATSIM!`)
+              .setColor(0x7289da)
+              .setURL(`https://stats.vatsim.net/stats/${user.cid}`)
+              .addFields(
+                { name: '🛫 Route', value: `**${origin}** → **${dest}**`, inline: false },
+                { name: '✈️ Aircraft', value: aircraft, inline: true },
+                { name: '📟 Callsign', value: callsign, inline: true },
+                { name: '⏱️ Online', value: timeOnline, inline: true },
+                { name: '🏔️ Altitude', value: altFt, inline: true },
+                { name: '💨 Speed', value: speedKt, inline: true },
+                { name: '🧭 Heading', value: heading, inline: true },
+              )
+              .setTimestamp()
+              .setFooter({ text: `Source: VATSIM • CID: ${user.cid} • Updated ${updatedAt}` });
+
+            if (Jimp && pilot.latitude != null && pilot.longitude != null && config.mapboxToken) {
+              try {
+                const mapPoints = [], flownSeg = [], remainSeg = [];
+                if (originCoords) {
+                  mapPoints.push({ ...originCoords, role: 'origin' });
+                  flownSeg.push({ points: [originCoords, { lat: pilot.latitude, lon: pilot.longitude }], color: 0x7289daff, width: 2 });
+                }
+                if (destCoords) {
+                  mapPoints.push({ ...destCoords, role: 'dest' });
+                  remainSeg.push({ points: [{ lat: pilot.latitude, lon: pilot.longitude }, destCoords], color: 0x334466ff, width: 2, dashed: true });
+                }
+                mapPoints.push({ lat: pilot.latitude, lon: pilot.longitude, role: 'plane', heading: pilot.heading || 0, color: 0x7289daff });
+                imgBuf = await buildFlightMap(mapPoints, [...flownSeg, ...remainSeg]);
+                embed.setImage('attachment://flightmap.png');
+              } catch (_) {}
+            }
+          }
+
+          if (embed) pages.push({ embed, imgBuf });
+        }
+
+        return pages;
+      };
+
+      // ---- Page display helpers ----
+      const makeRow = (page, total) => new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('wf_prev').setEmoji('⬅️').setStyle(ButtonStyle.Primary).setDisabled(page === 0),
+        new ButtonBuilder().setCustomId('wf_page').setLabel(`${page + 1} / ${total}`).setStyle(ButtonStyle.Secondary).setDisabled(true),
+        new ButtonBuilder().setCustomId('wf_next').setEmoji('➡️').setStyle(ButtonStyle.Primary).setDisabled(page === total - 1),
+      );
+
+      const makeOpts = (page, pages) => {
+        const { embed, imgBuf } = pages[page];
+        const components = pages.length > 1 ? [makeRow(page, pages.length)] : [];
+        return { embeds: [embed], components, ...(imgBuf && { files: [new AttachmentBuilder(imgBuf, { name: 'flightmap.png' })] }) };
+      };
+
+      // ---- Initial fetch ----
+      let flying = await fetchFlying();
+      if (!flying.length) return interaction.editReply('Nobody is currently flying.');
+
+      let pages = await buildPages(flying);
+      if (!pages.length) return interaction.editReply('Nobody is currently flying.');
+
+      let currentPage = 0;
+      let busy = false;
+
+      await interaction.editReply(makeOpts(currentPage, pages));
+
+      // ---- Pagination collector (3 min lifetime matches refresh window) ----
+      const collector = interaction.channel.createMessageComponentCollector({
+        filter: i => ['wf_prev', 'wf_next'].includes(i.customId) && i.message.interaction?.id === interaction.id,
+        time: 3 * 60 * 1000,
+      });
+      collector.on('collect', async i => {
+        if (i.customId === 'wf_prev') currentPage = Math.max(0, currentPage - 1);
+        if (i.customId === 'wf_next') currentPage = Math.min(pages.length - 1, currentPage + 1);
+        await i.update(makeOpts(currentPage, pages)).catch(() => {});
+      });
+
+      // ---- Auto-refresh every 10s for 3 minutes ----
+      const refreshTimer = setInterval(async () => {
+        if (busy) return;
+        busy = true;
+        try {
+          const newFlying = await fetchFlying();
+          if (!newFlying.length) {
+            clearInterval(refreshTimer);
+            collector.stop('nobody');
+            await interaction.editReply({ content: 'Nobody is currently flying.', embeds: [], components: [], files: [] });
+            return;
+          }
+          pages = await buildPages(newFlying);
+          currentPage = Math.min(currentPage, pages.length - 1);
+          await interaction.editReply(makeOpts(currentPage, pages));
+        } catch (_) {}
+        busy = false;
+      }, 10_000);
+
+      // Stop refreshing after 3 minutes
+      setTimeout(() => clearInterval(refreshTimer), 3 * 60 * 1000);
+
+      collector.on('end', (_, reason) => {
+        clearInterval(refreshTimer);
+        if (reason !== 'nobody') {
+          interaction.editReply({ components: [] }).catch(() => {});
+        }
+      });
+
+      break;
+    }
+
 
     default:
       await interaction.reply({ content: "Unknown command.", ephemeral: true });
