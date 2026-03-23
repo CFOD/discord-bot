@@ -1092,7 +1092,7 @@ client.once("ready", async () => {
     {
       name: 'list',
       description: 'Post or refresh a to-do list in this channel.',
-      options: [{ name: 'name', description: 'List name (e.g. "default")', type: 3, required: true }],
+      options: [{ name: 'name', description: 'List name', type: 3, required: true, autocomplete: true }],
     },
     {
       name: 'list-create',
@@ -1106,7 +1106,7 @@ client.once("ready", async () => {
       name: 'list-add',
       description: 'Add an item to a to-do list.',
       options: [
-        { name: 'name', description: 'List name', type: 3, required: true },
+        { name: 'name', description: 'List name', type: 3, required: true, autocomplete: true },
         { name: 'item', description: 'The item to add', type: 3, required: true },
       ],
     },
@@ -1114,7 +1114,7 @@ client.once("ready", async () => {
       name: 'list-remove',
       description: 'Remove an item from a to-do list by number.',
       options: [
-        { name: 'name', description: 'List name', type: 3, required: true },
+        { name: 'name', description: 'List name', type: 3, required: true, autocomplete: true },
         { name: 'number', description: 'Item number to remove', type: 4, required: true, min_value: 1 },
       ],
     },
@@ -1122,7 +1122,7 @@ client.once("ready", async () => {
       name: 'list-status',
       description: 'Update the status of a to-do list item.',
       options: [
-        { name: 'name', description: 'List name', type: 3, required: true },
+        { name: 'name', description: 'List name', type: 3, required: true, autocomplete: true },
         { name: 'number', description: 'Item number', type: 4, required: true, min_value: 1 },
         { name: 'status', description: 'New status', type: 3, required: true, choices: [
           { name: 'Not Started',   value: 'not_started'   },
@@ -1223,6 +1223,18 @@ const hasPermission = (interaction, userId) => {
 };
 
 // ====== Interaction Handling ======
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isAutocomplete()) return;
+  if (['list', 'list-add', 'list-remove', 'list-status'].includes(interaction.commandName)) {
+    const focused = interaction.options.getFocused().toLowerCase();
+    const choices = Object.entries(listsData.lists)
+      .filter(([name, list]) => name.toLowerCase().includes(focused) || list.title.toLowerCase().includes(focused))
+      .map(([name, list]) => ({ name: list.title + ' (' + name + ')', value: name }))
+      .slice(0, 25);
+    return interaction.respond(choices);
+  }
+});
+
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
