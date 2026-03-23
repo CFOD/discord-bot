@@ -18,6 +18,7 @@ const config = {
   ownerId: "278266066411454474",
   personalityUsers: ["278266066411454474", "697806013377544212", "143458705680105472", "383362076061466627"],
   relayServerId: "1303725085709959239",    // <-- Add Server ID for relay
+  allowedGuilds: ["1303725085709959239", "1483471532335304737"],  // whitelisted servers
   relayChannelId: "1412039978057470042", // <-- Add Channel ID for relay
   askWhitelist: [],
   flaggedWords: ["bomb", "kill", "nude", "hack", "virus"],
@@ -1230,8 +1231,8 @@ client.on("interactionCreate", async (interaction) => {
     fs.appendFileSync("command_log.txt", logMessage);
   }
 
-  if (interaction.guildId === '1483471532335304737' && interaction.user.id !== config.ownerId) {
-    return interaction.reply({ content: 'You do not have permission to use commands here.', ephemeral: true });
+  if (!config.allowedGuilds.includes(interaction.guildId)) {
+    return interaction.reply({ content: 'This bot is not available in this server.', ephemeral: true });
   }
 
   if (maintenanceMode && interaction.user.id !== config.ownerId) {
