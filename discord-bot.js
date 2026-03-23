@@ -2854,6 +2854,70 @@ ${sample.join(String.fromCharCode(10))}`;
     }
 
 
+
+    case "list": {
+      const listName = interaction.options.getString('name');
+      if (!listsData.lists[listName]) {
+        return interaction.reply({ content: `No list found with name **${listName}**. Use /list-create to make one.`, ephemeral: true });
+      }
+      const msg = await interaction.reply({ embeds: [buildListEmbed(listName)], fetchReply: true });
+      listsData.lists[listName].messageId = msg.id;
+      listsData.lists[listName].channelId = msg.channelId;
+      saveLists();
+      break;
+    }
+    case "list-create": {
+      const listName = interaction.options.getString('name');
+      const listTitle = interaction.options.getString('title');
+      if (listsData.lists[listName]) {
+        return interaction.reply({ content: `A list named **${listName}** already exists.`, ephemeral: true });
+      }
+      listsData.lists[listName] = { title: listTitle, items: [], messageId: null, channelId: null };
+      saveLists();
+      return interaction.reply({ content: `List **${listTitle}** created. Use /list ${listName} to post it.`, ephemeral: true });
+    }
+    case "list-add": {
+      const listName = interaction.options.getString('name');
+      const itemText = interaction.options.getString('item');
+      if (!listsData.lists[listName]) {
+        return interaction.reply({ content: `No list found with name **${listName}**.`, ephemeral: true });
+      }
+      listsData.lists[listName].items.push({ text: itemText, status: 'not_started' });
+      sortListItems(listsData.lists[listName].items);
+      saveLists();
+      await refreshListMessage(client, listName);
+      return interaction.reply({ content: `Added **${itemText}** to ${listsData.lists[listName].title}.`, ephemeral: true });
+    }
+    case "list-remove": {
+      const listName = interaction.options.getString('name');
+      const itemNum = interaction.options.getInteger('number');
+      const list = listsData.lists[listName];
+      if (!list) return interaction.reply({ content: `No list found with name **${listName}**.`, ephemeral: true });
+      if (itemNum < 1 || itemNum > list.items.length) {
+        return interaction.reply({ content: `Item number must be between 1 and ${list.items.length}.`, ephemeral: true });
+      }
+      const removed = list.items.splice(itemNum - 1, 1)[0];
+      saveLists();
+      await refreshListMessage(client, listName);
+      return interaction.reply({ content: `Removed **${removed.text}** from ${list.title}.`, ephemeral: true });
+    }
+    case "list-status": {
+      const listName = interaction.options.getString('name');
+      const itemNum = interaction.options.getInteger('number');
+      const newStatus = interaction.options.getString('status');
+      const list = listsData.lists[listName];
+      if (!list) return interaction.reply({ content: `No list found with name **${listName}**.`, ephemeral: true });
+      if (itemNum < 1 || itemNum > list.items.length) {
+        return interaction.reply({ content: `Item number must be between 1 and ${list.items.length}.`, ephemeral: true });
+      }
+      list.items[itemNum - 1].status = newStatus;
+      sortListItems(list.items);
+      saveLists();
+      await refreshListMessage(client, listName);
+      const statusInfo = LIST_STATUSES[newStatus];
+      return interaction.reply({ content: `${statusInfo.emoji} Updated to **${statusInfo.label}**.`, ephemeral: true });
+    }
+
     default:
       await interaction.reply({ content: "Unknown command.", ephemeral: true });
       break;
