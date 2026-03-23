@@ -1115,7 +1115,7 @@ client.once("ready", async () => {
       description: 'Remove an item from a to-do list by number.',
       options: [
         { name: 'name', description: 'List name', type: 3, required: true, autocomplete: true },
-        { name: 'number', description: 'Item number to remove', type: 4, required: true, min_value: 1 },
+        { name: 'numbers', description: 'Item number(s) to remove, e.g. 1,2,3', type: 3, required: true },
       ],
     },
     {
@@ -1123,7 +1123,7 @@ client.once("ready", async () => {
       description: 'Update the status of a to-do list item.',
       options: [
         { name: 'name', description: 'List name', type: 3, required: true, autocomplete: true },
-        { name: 'number', description: 'Item number', type: 4, required: true, min_value: 1 },
+        { name: 'numbers', description: 'Item number(s) to update, e.g. 1,2,3', type: 3, required: true },
         { name: 'status', description: 'New status', type: 3, required: true, choices: [
           { name: 'Not Started',   value: 'not_started'   },
           { name: 'In Progress',   value: 'in_progress'   },
@@ -2902,32 +2902,32 @@ ${sample.join(String.fromCharCode(10))}`;
     }
     case "list-remove": {
       const listName = interaction.options.getString('name');
-      const itemNum = interaction.options.getInteger('number');
+      const numbersStr = interaction.options.getString('numbers');
       const list = listsData.lists[listName];
       if (!list) return interaction.reply({ content: `No list found with name **${listName}**.`, ephemeral: true });
-      if (itemNum < 1 || itemNum > list.items.length) {
-        return interaction.reply({ content: `Item number must be between 1 and ${list.items.length}.`, ephemeral: true });
-      }
-      const removed = list.items.splice(itemNum - 1, 1)[0];
+      const nums = [...new Set(numbersStr.split(',').map(n => parseInt(n.trim())).filter(n => !isNaN(n)))].sort((a, b) => b - a);
+      const invalid = nums.filter(n => n < 1 || n > list.items.length);
+      if (invalid.length) return interaction.reply({ content: `Invalid item number(s): ${invalid.join(', ')}. List has ${list.items.length} items.`, ephemeral: true });
+      const removed = nums.map(n => list.items.splice(n - 1, 1)[0].text);
       saveLists();
       await refreshListMessage(client, listName);
-      return interaction.reply({ content: `Removed **${removed.text}** from ${list.title}.`, ephemeral: true });
+      return interaction.reply({ content: `Removed from ${list.title}: **${removed.join('**, **')}**`, ephemeral: true });
     }
     case "list-status": {
       const listName = interaction.options.getString('name');
-      const itemNum = interaction.options.getInteger('number');
+      const numbersStr = interaction.options.getString('numbers');
       const newStatus = interaction.options.getString('status');
       const list = listsData.lists[listName];
       if (!list) return interaction.reply({ content: `No list found with name **${listName}**.`, ephemeral: true });
-      if (itemNum < 1 || itemNum > list.items.length) {
-        return interaction.reply({ content: `Item number must be between 1 and ${list.items.length}.`, ephemeral: true });
-      }
-      list.items[itemNum - 1].status = newStatus;
+      const nums = [...new Set(numbersStr.split(',').map(n => parseInt(n.trim())).filter(n => !isNaN(n)))];
+      const invalid = nums.filter(n => n < 1 || n > list.items.length);
+      if (invalid.length) return interaction.reply({ content: `Invalid item number(s): ${invalid.join(', ')}. List has ${list.items.length} items.`, ephemeral: true });
+      nums.forEach(n => { list.items[n - 1].status = newStatus; });
       sortListItems(list.items);
       saveLists();
       await refreshListMessage(client, listName);
       const statusInfo = LIST_STATUSES[newStatus];
-      return interaction.reply({ content: `${statusInfo.emoji} Updated to **${statusInfo.label}**.`, ephemeral: true });
+      return interaction.reply({ content: `${statusInfo.emoji} Marked ${nums.length} item(s) as **${statusInfo.label}**.`, ephemeral: true });
     }
 
     default:
