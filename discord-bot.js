@@ -6,12 +6,19 @@ const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerSta
 const { spawn } = require("child_process");
 const { exec } = require("child_process");
 const axios = require("axios");
-let Jimp = null;
+let Jimp;
+
 try {
   const jimpPkg = require('jimp');
-  // v1.x exports { Jimp, ... }; v0.x exports the class directly
-  Jimp = jimpPkg.Jimp ?? jimpPkg;
-} catch (_) {}
+  Jimp = jimpPkg.Jimp ?? jimpPkg.default ?? jimpPkg;
+
+  if (typeof Jimp.read !== "function") {
+    throw new Error("Invalid Jimp export structure");
+  }
+} catch (err) {
+  console.error("Jimp initialization error:", err);
+  Jimp = null;
+}
 
 // ====== Configuration ======
 const config = {
@@ -33,12 +40,15 @@ const config = {
   volantaUsers: [
     { userId: "c8dce899-5b6b-4534-3fb9-08dca7f6f6ee", username: "Celestial" },
     { userId: "750e3239-b319-402d-902d-7a7723729382", username: "maxpilot95" },
-    { userId: "825dfa11-fbd8-4ce4-e5b9-08da9b1a2a09", username: "fsxaviator1" },
-    { userId: "89bffd57-ffc9-43e3-aab4-0c13c3a5d0bf", username: "AppleJuice" },
-    { userId: "630674b9-8842-42c0-364c-08db0837bdbd", username: "APPLEJU1CE" },
+    { userId: "825dfa11-fbd8-4ce4-e5b9-08da9b1a2a09", username: "fsxaviator1", discordId: "647970458167279655" },
+    { userId: "112ca7fc-a8ea-4b4c-0ede-08db0072901e", username: "banji9940", discordId: "334301384520237068" },
   ],
   vatsimUsers: [
-    { cid: "1369606", username: "CF" },
+    { cid: "1369606", username: "CF", discordId: "278266066411454474" },
+  ],
+  elevatexUsers: [
+    { userId: "08dda6c4-248f-46fe-8d97-d79f7e5b9723", username: "MaxPilot95" },
+    { userId: "08ddb672-cee2-45f4-86e4-12977d14b005", username: "DeepInTheSand" },
   ],
 };
 
@@ -513,6 +523,31 @@ const MESSAGE_COUNTS_PATH = path.join(__dirname, 'message_counts.json');
 const ROULETTE_STREAKS_PATH = path.join(__dirname, 'roulette_streaks.json');
 const PURGE_CACHE_PATH = path.join(__dirname, 'purge_cache.json');
 const VOLANTA_LAST_FLIGHT_PATH = path.join(__dirname, 'volanta_last_flight.json');
+const ELEVATEX_LAST_FLIGHT_PATH = path.join(__dirname, 'elevatex_last_flight.json');
+const LIVE_MAP_CHANNEL_ID  = '1486674881843167383';
+const LIVE_MAP_STATE_PATH  = path.join(__dirname, 'live_map_state.json');
+const LIVE_MAP_POSITIONS_PATH = path.join(__dirname, 'live_map_positions.json');
+const LIVE_MAP_USERS_PATH     = path.join(__dirname, 'live_map_users.json');
+const WORLD_BASEMAP_PATH   = path.join(__dirname, 'world_basemap.png');
+const LIVE_MAP_W = 1280, LIVE_MAP_H = 640;
+const LIVE_MAP_ZOOM = 1.4, LIVE_MAP_CX = 0, LIVE_MAP_CY = 0;
+const LIVE_MAP_INTERVAL_MS = 30 * 1000;
+
+let liveMapMessageId = null;
+let liveMapFont = null;
+const liveMapAvatarCache = new Map(); // discordId -> Jimp image
+try {
+  if (fs.existsSync(LIVE_MAP_STATE_PATH)) {
+    liveMapMessageId = JSON.parse(fs.readFileSync(LIVE_MAP_STATE_PATH)).messageId || null;
+  }
+} catch(e) {}
+const liveMapLastPositions = new Map(); // userId -> last known position
+try {
+  if (fs.existsSync(LIVE_MAP_POSITIONS_PATH)) {
+    const saved = JSON.parse(fs.readFileSync(LIVE_MAP_POSITIONS_PATH));
+    for (const [k, v] of Object.entries(saved)) liveMapLastPositions.set(k, v);
+  }
+} catch(e) {}
 const KNOWN_EMERGENCIES_PATH = path.join(__dirname, 'known_emergencies.json');
 const DEFAULT_STORY_LENGTH = 15;
 
@@ -527,6 +562,8 @@ const rouletteStreaks = new Map(); // userId -> { count, lastMutedAt }
 let rageModeActive = false;
 let emergencyFirstPoll = true;
 const lastVolantaFlightIds = new Map(); // userId -> last seen flight ID
+const lastElevatexFlightIds = new Map(); // userId -> last seen flight ID
+const activeElevatexFlights = new Map(); // userId -> { id, origin, dest, aircraft, callsign }
 const MUTE_DURATIONS_MS = [1, 5, 10, 30, 60, 120, 240].map(m => m * 60 * 1000); // 1m 5m 10m 30m 1h 2h 4h
 const triviaCooldowns = new Map();
 const geminiUserCooldowns = new Map();
@@ -916,6 +953,7 @@ loadMessageCounts();
 loadRouletteStreaks();
 loadKnownEmergencies();
 try { if (fs.existsSync(VOLANTA_LAST_FLIGHT_PATH)) { const saved = JSON.parse(fs.readFileSync(VOLANTA_LAST_FLIGHT_PATH)); for (const [k, v] of Object.entries(saved)) lastVolantaFlightIds.set(k, v); } } catch(e) {}
+try { if (fs.existsSync(ELEVATEX_LAST_FLIGHT_PATH)) { const saved = JSON.parse(fs.readFileSync(ELEVATEX_LAST_FLIGHT_PATH)); for (const [k, v] of Object.entries(saved)) lastElevatexFlightIds.set(k, v); } } catch(e) {}
 
 // ====== Ready / Command Registration ======
 client.once("ready", async () => {
@@ -1088,6 +1126,15 @@ client.once("ready", async () => {
       description: "Fetch the latest METAR for an airport.",
       options: [{ name: "icao", description: "The ICAO airport code (e.g. EGLL, KJFK)", type: 3, required: true }],
     },
+    { name: "trackme", description: "Add or update your details on the live flight tracker map.",
+      options: [
+        { name: "username", description: "Display name on the map (defaults to your Discord name)", type: 3, required: false },
+        { name: "volanta",  description: "Your Volanta user ID", type: 3, required: false },
+        { name: "elevatex", description: "Your Elevatex user ID", type: 3, required: false },
+        { name: "vatsim",   description: "Your VATSIM CID", type: 3, required: false },
+        { name: "remove",   description: "Remove yourself from the live map", type: 5, required: false },
+      ]
+    },
     { name: "whosflying", description: "Check if anyone is currently flying in MSFS on Volanta." },
     {
       name: 'list',
@@ -1149,6 +1196,15 @@ client.once("ready", async () => {
   if (config.volantaUsers?.length && config.volantaChannelId) {
     setInterval(() => pollVolantaFlights(client), 5 * 60 * 1000);
     console.log('Volanta flight poller started.');
+  if (config.elevatexUsers?.length && config.volantaChannelId) {
+    pollElevatexFlights(client);
+    setInterval(() => pollElevatexFlights(client), 5 * 60 * 1000);
+    console.log('Elevatex flight poller started.');
+  // Live map
+  updateLiveMap(client);
+  setInterval(() => updateLiveMap(client), LIVE_MAP_INTERVAL_MS);
+  console.log('Live map started.');
+  }
   }
 
   // Start emergency squawk polling (disabled - re-enable by removing `false &&`)
@@ -1986,7 +2042,9 @@ Answer wrong → YOU get **${durationLabel}**.
 
         if (!config.mapboxToken) {
           embed.setFooter({ text: 'Source: OpenSky Network • Add mapboxToken to config for map image (free at mapbox.com)' });
-          await interaction.editReply({ embeds: [embed] });
+          const actMapBuf = await buildPilotLocalMap(client, { ...e, isActive: true });
+    const actFiles = actMapBuf ? [{ attachment: actMapBuf, name: "pilot_map.png" }] : [];
+    await interaction.editReply({ embeds: [embed], files: actFiles });
         } else {
           try {
             // Fetch clean dark basemap — no marker overlay
@@ -2523,6 +2581,75 @@ ${sample.join(String.fromCharCode(10))}`;
       break;
     }
 
+    case "trackme": {
+      const isRemove = interaction.options.getBoolean("remove");
+      const discordId = interaction.user.id;
+      let lmUsers = {};
+      try { if (fs.existsSync(LIVE_MAP_USERS_PATH)) lmUsers = JSON.parse(fs.readFileSync(LIVE_MAP_USERS_PATH)); } catch(_) {}
+
+      if (isRemove) {
+        if (lmUsers[discordId]) {
+          delete lmUsers[discordId];
+          fs.writeFileSync(LIVE_MAP_USERS_PATH, JSON.stringify(lmUsers, null, 2));
+          await interaction.reply({ content: "✅ You've been removed from the live map.", ephemeral: true });
+        } else {
+          await interaction.reply({ content: "You're not currently on the live map.", ephemeral: true });
+        }
+        break;
+      }
+
+      const newUsername  = interaction.options.getString("username");
+      const newVolanta   = interaction.options.getString("volanta");
+      const newElevatex  = interaction.options.getString("elevatex");
+      const newVatsim    = interaction.options.getString("vatsim");
+      const anyChange = newUsername || newVolanta || newElevatex || newVatsim;
+
+      const existing = lmUsers[discordId] || {};
+
+      // Show current status if no fields provided
+      if (!anyChange) {
+        if (!existing.discordId) {
+          await interaction.reply({ content: "You're not on the live map yet. Use `/trackme` with your Volanta, Elevatex, or VATSIM ID to add yourself.", ephemeral: true });
+        } else {
+          const lines = [
+            `📍 **${existing.username}** — current registration:`,
+            existing.volantaId  ? `• Volanta: \`${existing.volantaId}\``  : "• Volanta: not set",
+            existing.elevatexId ? `• Elevatex: \`${existing.elevatexId}\`` : "• Elevatex: not set",
+            existing.vatsimCid  ? `• VATSIM: \`${existing.vatsimCid}\``   : "• VATSIM: not set",
+          ].join("\n");
+          await interaction.reply({ content: lines, ephemeral: true });
+        }
+        break;
+      }
+
+      // Build updated entry
+      lmUsers[discordId] = {
+        discordId,
+        username:   newUsername   || existing.username   || (interaction.member?.displayName ?? interaction.user.username),
+        volantaId:  newVolanta    !== null ? newVolanta   : (existing.volantaId  || null),
+        elevatexId: newElevatex   !== null ? newElevatex  : (existing.elevatexId || null),
+        vatsimCid:  newVatsim     !== null ? newVatsim    : (existing.vatsimCid  || null),
+      };
+      const u = lmUsers[discordId];
+
+      if (!u.volantaId && !u.elevatexId && !u.vatsimCid) {
+        await interaction.reply({ content: "⚠️ You need at least one tracker ID — Volanta, Elevatex, or VATSIM CID.", ephemeral: true });
+        break;
+      }
+
+      fs.writeFileSync(LIVE_MAP_USERS_PATH, JSON.stringify(lmUsers, null, 2));
+      const lines = [
+        `✅ **${u.username}** added to the live map!`,
+        u.volantaId  ? `• Volanta: \`${u.volantaId}\``  : null,
+        u.elevatexId ? `• Elevatex: \`${u.elevatexId}\`` : null,
+        u.vatsimCid  ? `• VATSIM: \`${u.vatsimCid}\``   : null,
+        "",
+        "Your Discord profile picture will show on the map when you're flying.",
+      ].filter(l => l !== null).join("\n");
+      await interaction.reply({ content: lines, ephemeral: true });
+      break;
+    }
+
     case "whosflying": {
       await interaction.deferReply();
 
@@ -2554,7 +2681,7 @@ ${sample.join(String.fromCharCode(10))}`;
               await lookupAirports(entry.originIcao, entry.destinationIcao);
               const originCoords = airportCache[entry.originIcao] || null;
               const destCoords   = airportCache[entry.destinationIcao] || null;
-              flying.push({ source: 'volanta', user, entry, originCoords, destCoords });
+              flying.push({ source: 'Volanta', user, entry, originCoords, destCoords });
             }
           } catch (_) {}
         }
@@ -2569,7 +2696,21 @@ ${sample.join(String.fromCharCode(10))}`;
               await lookupAirports(pilot.flight_plan?.departure, pilot.flight_plan?.arrival);
               const originCoords = airportCache[pilot.flight_plan?.departure] || null;
               const destCoords   = airportCache[pilot.flight_plan?.arrival]   || null;
-              flying.push({ source: 'vatsim', user: vu, pilot, originCoords, destCoords });
+              flying.push({ source: 'Vatsim', user: vu, pilot, originCoords, destCoords });
+            }
+          } catch (_) {}
+        }
+
+        if (config.elevatexUsers?.length) {
+          try {
+            const exRes = await axios.get('https://api.elevatex.app/live/elvtx-traffic.json', { timeout: 10000 });
+            const allFlights = Array.isArray(exRes.data) ? exRes.data : [];
+            for (const user of config.elevatexUsers) {
+              const ef = allFlights.find(f => f.userId === user.userId && !f.completed && !f.cancelled && f.position);
+              if (!ef) continue;
+              const originCoords = ef.origin ? { lat: ef.origin.latitude, lon: ef.origin.longitude } : null;
+              const destCoords   = ef.destination ? { lat: ef.destination.latitude, lon: ef.destination.longitude } : null;
+              flying.push({ source: 'Elevatex', user, flight: ef, originCoords, destCoords });
             }
           } catch (_) {}
         }
@@ -2785,6 +2926,40 @@ ${sample.join(String.fromCharCode(10))}`;
                   remainSeg.push({ points: [{ lat: pilot.latitude, lon: pilot.longitude }, destCoords], color: 0x334466ff, width: 2, dashed: true });
                 }
                 mapPoints.push({ lat: pilot.latitude, lon: pilot.longitude, role: 'plane', heading: pilot.heading || 0, color: 0x7289daff });
+                imgBuf = await buildFlightMap(mapPoints, [...flownSeg, ...remainSeg]);
+                embed.setImage('attachment://flightmap.png');
+              } catch (_) {}
+            }
+          } else if (entry.source === 'Elevatex') {
+            const { user, flight: ef, originCoords, destCoords } = entry;
+            const pos      = ef.position || {};
+            const origin   = ef.origin?.icao      || '???';
+            const dest     = ef.destination?.icao || '???';
+            const aircraft = ef.aircraftIcao || ef.aircraft?.typeCode || 'Unknown';
+            const callsign = ef.callsign    || '-';
+            const altFt    = pos.altitude    != null ? `${Math.round(pos.altitude).toLocaleString()} ft` : 'Unknown';
+            const speedKt  = pos.groundSpeed != null ? `${Math.round(pos.groundSpeed)} kt` : 'Unknown';
+            const heading  = pos.heading     != null ? `${Math.round(pos.heading)}°` : 'Unknown';
+            embed = new EmbedBuilder()
+              .setTitle(`✈️ ${user.username} is flying on Elevatex!`)
+              .setColor(0xff6600)
+              .addFields(
+                { name: '🛫 Route', value: `**${origin}** → **${dest}**`, inline: false },
+                { name: '✈️ Aircraft', value: aircraft, inline: true },
+                { name: '📟 Callsign', value: callsign, inline: true },
+                { name: '🏔️ Altitude', value: altFt, inline: true },
+                { name: '💨 Speed', value: speedKt, inline: true },
+                { name: '🧭 Heading', value: heading, inline: true },
+              )
+              .setTimestamp()
+              .setFooter({ text: `Source: Elevatex • Updated ${updatedAt}` });
+
+            if (Jimp && pos.latitude != null && pos.longitude != null && config.mapboxToken) {
+              try {
+                const mapPoints = [], flownSeg = [], remainSeg = [];
+                if (originCoords) { mapPoints.push({ ...originCoords, role: 'origin' }); flownSeg.push({ points: [originCoords, { lat: pos.latitude, lon: pos.longitude }], color: 0xff6600ff, width: 2 }); }
+                if (destCoords)   { mapPoints.push({ ...destCoords,   role: 'dest'   }); remainSeg.push({ points: [{ lat: pos.latitude, lon: pos.longitude }, destCoords], color: 0x553300ff, width: 2, dashed: true }); }
+                mapPoints.push({ lat: pos.latitude, lon: pos.longitude, role: 'plane', heading: pos.heading || 0, color: 0xff6600ff });
                 imgBuf = await buildFlightMap(mapPoints, [...flownSeg, ...remainSeg]);
                 embed.setImage('attachment://flightmap.png');
               } catch (_) {}
@@ -3170,7 +3345,10 @@ async function postSpasticResults(client) {
     if (reason) { if (!reasons[votedId]) reasons[votedId] = []; reasons[votedId].push(reason); }
   }
   const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-  const [winnerId, winCount] = sorted[0];
+  const topCount = sorted[0][1];
+  const topTied = sorted.filter(([, n]) => n === topCount);
+  const isTie = topTied.length > 1;
+  const [winnerId, winCount] = isTie ? topTied[Math.floor(Math.random() * topTied.length)] : sorted[0];
   if (!spasticWins[winnerId]) spasticWins[winnerId] = 0;
   spasticWins[winnerId]++;
   saveSpasticWins();
@@ -3180,17 +3358,20 @@ async function postSpasticResults(client) {
   const medals = ['🥇', '🥈', '🥉'];
   const lines = sorted.map(([id, n], i) => {
     const reasonList = reasons[id] ? '\n> ' + reasons[id].join('\n> ') : '';
-    return `${medals[i] || `${i+1}.`} <@${id}> — **${n} vote${n === 1 ? '' : 's'}**${reasonList}`;
+    const tieMarker = isTie && n === topCount ? ' 🎰' : '';
+    return `${medals[i] || `${i+1}.`} <@${id}> — **${n} vote${n === 1 ? '' : 's'}**${tieMarker}${reasonList}`;
   }).join('\n');
   const embed = new EmbedBuilder()
     .setTitle(`🤡 Spastic of the Day — ${announceDate}`)
-    .setDescription(lines)
+    .setDescription(lines + (isTie ? `
+-# 🎰 ${topTied.length}-way tie — roulette picked the winner!` : ''))
     .setColor(0xFF6B35)
     .setFooter({ text: `${totalVoters} ${totalVoters === 1 ? 'person' : 'people'} voted today` });
   try {
     const guild = await client.guilds.fetch(config.relayServerId);
     const channel = await guild.channels.fetch(config.relayChannelId);
-    await channel.send({ content: `🏆 **Spastic of the Day** is <@${winnerId}>!`, embeds: [embed] });
+    const winMsg = isTie ? `🎰 **Tie broken by roulette!** <@${winnerId}> is the Spastic of the Day!` : `🏆 **Spastic of the Day** is <@${winnerId}>!`;
+    await channel.send({ content: winMsg, embeds: [embed] });
   } catch (e) { console.error('[Spastic] Failed to post results:', e.message); }
 }
 
@@ -3806,6 +3987,525 @@ async function pollVolantaFlights(client) {
     } catch (e) { console.error(`Volanta poll error (${user.username}):`, e.message); }
   }
 }
+
+// ====== Elevatex Flight Poller ======
+async function pollElevatexFlights(client) {
+  if (!config.elevatexUsers?.length || !config.volantaChannelId) return;
+  const channel = client.guilds.cache.first()?.channels.cache.get(config.volantaChannelId);
+  if (!channel) return;
+
+  let allFlights = [];
+  try {
+    const res = await axios.get('https://api.elevatex.app/live/elvtx-traffic.json', { timeout: 10000 });
+    allFlights = Array.isArray(res.data) ? res.data : [];
+  } catch (e) { console.error('Elevatex traffic fetch error:', e.message); return; }
+
+  for (const user of config.elevatexUsers) {
+    try {
+      const active = allFlights.find(f => f.userId === user.userId && !f.completed && !f.cancelled);
+      if (active) {
+        activeElevatexFlights.set(user.userId, {
+          id: active.id,
+          origin: active.origin?.icao || '???',
+          dest: active.destination?.icao || '???',
+          aircraft: active.aircraftIcao || active.aircraft?.typeCode || 'Unknown',
+          callsign: active.callsign || 'Unknown',
+        });
+      } else {
+        const tracked = activeElevatexFlights.get(user.userId);
+        if (!tracked) continue;
+        if (tracked.id === lastElevatexFlightIds.get(user.userId)) {
+          activeElevatexFlights.delete(user.userId);
+          continue;
+        }
+        activeElevatexFlights.delete(user.userId);
+        lastElevatexFlightIds.set(user.userId, tracked.id);
+        try {
+          const toSave = Object.fromEntries(lastElevatexFlightIds);
+          fs.writeFileSync(ELEVATEX_LAST_FLIGHT_PATH, JSON.stringify(toSave, null, 2));
+        } catch(e) {}
+
+        let landingRate = 'Unknown', duration = 'Unknown', distNm = null, fuelBurn = null, avgSpeed = null;
+        try {
+          const det = await axios.get(`https://api.elevatex.app/api/flight/${tracked.id}/details/public`, { timeout: 10000 });
+          const d = det.data;
+          if (d) {
+            const flightTimeSec = d.duration || d.flightTime || 0;
+            if (flightTimeSec) { const hrs = Math.floor(flightTimeSec / 3600); const mins = Math.floor((flightTimeSec % 3600) / 60); duration = `${hrs}h ${mins}m`; }
+            if (d.landingRate != null) landingRate = `${Math.round(d.landingRate)} fpm`;
+            if (d.distance)   distNm   = `${Math.round(d.distance).toLocaleString()} nm`;
+            if (d.fuelBurn)   fuelBurn = `${Math.round(d.fuelBurn).toLocaleString()} kg`;
+            if (d.distance && flightTimeSec) avgSpeed = `${Math.round(d.distance / (flightTimeSec / 3600))} kt`;
+          }
+        } catch(_) {}
+
+        const embed = new EmbedBuilder()
+          .setTitle(`✈️ ${user.username} just landed!`)
+          .setDescription(`**${tracked.callsign}** — ${tracked.origin} → ${tracked.dest}`)
+          .addFields(
+            { name: '🛫 Route', value: `${tracked.origin} → ${tracked.dest}`, inline: true },
+            { name: '🛩️ Aircraft', value: tracked.aircraft, inline: true },
+            { name: '⏱️ Duration', value: duration, inline: true },
+            ...(distNm ? [{ name: '📏 Distance', value: distNm, inline: true }] : []),
+            { name: '🛬 Landing Rate', value: landingRate, inline: true },
+            ...(fuelBurn ? [{ name: '⛽ Fuel Burn', value: fuelBurn, inline: true }] : []),
+            ...(avgSpeed ? [{ name: '💨 Avg Speed', value: avgSpeed, inline: true }] : []),
+          )
+          .setColor(0xff6600)
+          .setTimestamp()
+          .setFooter({ text: `Elevatex · ${tracked.aircraft}` });
+        await channel.send({ embeds: [embed] });
+      }
+    } catch (e) { console.error(`Elevatex poll error (${user.username}):`, e.message); }
+  }
+}
+
+// ====== Live Map ======
+
+// Web Mercator lat/lon to pixel on the cached world basemap
+function liveMapLatLonToPixel(lat, lon) {
+  lat = Math.max(-85.051129, Math.min(85.051129, lat)); // clamp to Mercator-valid range
+  const scale = 512 * Math.pow(2, LIVE_MAP_ZOOM); // Mapbox 512px tiles
+  const m = l => scale / (2 * Math.PI) * Math.log(Math.tan(Math.PI / 4 + l * Math.PI / 360));
+  const rawX = Math.round(LIVE_MAP_W / 2 + (lon - LIVE_MAP_CX) * scale / 360);
+  const rawY = Math.round(LIVE_MAP_H / 2 - (m(lat) - m(LIVE_MAP_CY)));
+  const outOfBounds = rawX < 0 || rawX >= LIVE_MAP_W || rawY < 0 || rawY >= LIVE_MAP_H;
+  return {
+    x: Math.max(16, Math.min(LIVE_MAP_W - 17, rawX)),
+    y: Math.max(16, Math.min(LIVE_MAP_H - 17, rawY)),
+    outOfBounds,
+  };
+}
+
+// Fetch world basemap from Mapbox once; cache forever
+async function ensureWorldBasemap() {
+  if (fs.existsSync(WORLD_BASEMAP_PATH)) return;
+  console.log('Fetching world basemap from Mapbox (one-time)...');
+  const url = `https://api.mapbox.com/styles/v1/mapbox/dark-v11/static/${LIVE_MAP_CX},${LIVE_MAP_CY},${LIVE_MAP_ZOOM}/${LIVE_MAP_W}x${LIVE_MAP_H}?access_token=${config.mapboxToken}`;
+  const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 15000 });
+  fs.writeFileSync(WORLD_BASEMAP_PATH, Buffer.from(res.data));
+  console.log('World basemap cached.');
+}
+
+// Download and cache a Discord member's avatar (circular, 28x28)
+async function getLiveMapAvatar(client, discordId) {
+  if (liveMapAvatarCache.has(discordId)) {
+    return liveMapAvatarCache.get(discordId);
+  }
+
+  try {
+    let member = null;
+    for (const g of client.guilds.cache.values()) {
+      member = g.members.cache.get(discordId);
+      if (!member) { try { member = await g.members.fetch(discordId); } catch (_) {} }
+      if (member) break;
+    }
+    if (!member) { console.error("Member not found:", discordId); return null; }
+    const url = member.displayAvatarURL({ size: 64, extension: 'png', forceStatic: true });
+    const buf = await axios.get(url, { responseType: 'arraybuffer', timeout: 10000 });
+    const img = await Jimp.read(Buffer.from(buf.data));
+    img.resize({ w: 28, h: 28 });
+    img.scan(0, 0, 28, 28, (ax, ay, idx) => {
+      if ((ax - 14) * (ax - 14) + (ay - 14) * (ay - 14) > 13 * 13)
+        img.bitmap.data[idx + 3] = 0;
+    });
+    liveMapAvatarCache.set(discordId, img);
+    return img;
+  } catch(e) {
+    console.error(`[liveMap] avatar fetch failed for ${discordId}:`, e.message);
+    return null;
+  }
+}
+
+// Global airport coordinate cache for live map route lines
+const liveMapAirportCache = {};
+async function liveMapLookupAirports(...icaos) {
+  const missing = icaos.filter(id => id && id !== '???' && !liveMapAirportCache[id]);
+  if (!missing.length) return;
+  try {
+    const res = await axios.get(
+      `https://aviationweather.gov/api/data/airport?ids=${missing.join(',')}&format=json`,
+      { timeout: 8000 }
+    );
+    for (const ap of (res.data || [])) liveMapAirportCache[ap.icaoId] = { lat: ap.lat, lon: ap.lon };
+  } catch(_) {}
+}
+
+// Fetch current positions from all sources — standalone, does not depend on
+// the locally-scoped fetchFlying inside /whosflying
+async function liveMapFetchPositions() {
+  const entries = [];
+
+  // Merge hardcoded config users with self-registered file users
+  let lmFileUsers = [];
+  try {
+    if (fs.existsSync(LIVE_MAP_USERS_PATH))
+      lmFileUsers = Object.values(JSON.parse(fs.readFileSync(LIVE_MAP_USERS_PATH)));
+  } catch(_) {}
+  const lmDedup = (arr, key) => [...new Map(arr.map(u => [u[key], u])).values()];
+  const lmVolantaUsers = lmDedup([
+    ...(config.volantaUsers || []).map(u => ({ userId: u.userId, username: u.username, discordId: u.discordId || null })),
+    ...lmFileUsers.filter(u => u.volantaId).map(u => ({ userId: u.volantaId, username: u.username, discordId: u.discordId })),
+  ], 'userId');
+  const lmVatsimUsers = lmDedup([
+    ...(config.vatsimUsers || []).map(u => ({ cid: u.cid, username: u.username, discordId: u.discordId || null })),
+    ...lmFileUsers.filter(u => u.vatsimCid).map(u => ({ cid: u.vatsimCid, username: u.username, discordId: u.discordId })),
+  ], 'cid');
+  const lmElevatexUsers = lmDedup([
+    ...(config.elevatexUsers || []).map(u => ({ userId: u.userId, username: u.username, discordId: u.discordId || null })),
+    ...lmFileUsers.filter(u => u.elevatexId).map(u => ({ userId: u.elevatexId, username: u.username, discordId: u.discordId })),
+  ], 'userId');
+
+  // Volanta
+  if (lmVolantaUsers.length) {
+    try {
+      const res = await axios.get('https://webassets.volanta.app/volanta-flight-positions.json', { timeout: 10000 });
+      const feed = res.data?.data || [];
+      for (const user of lmVolantaUsers) {
+        const e = feed.find(f => f.networkUserId === user.userId && f.privacyOption !== 'Private');
+        if (!e || !e.position) continue;
+        await liveMapLookupAirports(e.originIcao, e.destinationIcao);
+        entries.push({
+          source: 'Volanta', username: user.username, userId: user.userId,
+          discordId: user.discordId,
+          lat: e.position.latitude, lon: e.position.longitude,
+          heading: e.position.headingTrue || 0,
+          altitude: e.position.altitude, speed: e.position.groundSpeed,
+          origin: e.originIcao || '???', dest: e.destinationIcao || '???',
+          originLat: liveMapAirportCache[e.originIcao]?.lat ?? null,
+          originLon: liveMapAirportCache[e.originIcao]?.lon ?? null,
+          destLat: liveMapAirportCache[e.destinationIcao]?.lat ?? null,
+          destLon: liveMapAirportCache[e.destinationIcao]?.lon ?? null,
+          aircraft: e.aircraftIcao || 'Unknown', callsign: e.callsign || '-',
+        });
+      }
+    } catch(_) {}
+  }
+
+  // VATSIM
+  if (lmVatsimUsers.length) {
+    try {
+      const res = await axios.get('https://data.vatsim.net/v3/vatsim-data.json', { timeout: 15000 });
+      const pilots = res.data?.pilots || [];
+      for (const vu of lmVatsimUsers) {
+        const p = pilots.find(pilot => String(pilot.cid) === String(vu.cid));
+        if (!p) continue;
+        const vOrigin = p.flight_plan?.departure, vDest = p.flight_plan?.arrival;
+        await liveMapLookupAirports(vOrigin, vDest);
+        entries.push({
+          source: 'vatsim', username: vu.username, userId: String(vu.cid),
+          discordId: vu.discordId || null,
+          lat: p.latitude, lon: p.longitude, heading: p.heading || 0,
+          altitude: p.altitude, speed: p.groundspeed,
+          origin: vOrigin || '???', dest: vDest || '???',
+          originLat: liveMapAirportCache[vOrigin]?.lat ?? null,
+          originLon: liveMapAirportCache[vOrigin]?.lon ?? null,
+          destLat: liveMapAirportCache[vDest]?.lat ?? null,
+          destLon: liveMapAirportCache[vDest]?.lon ?? null,
+          aircraft: p.flight_plan?.aircraft_short || p.flight_plan?.aircraft || 'Unknown',
+          callsign: p.callsign || '-',
+        });
+      }
+    } catch(_) {}
+  }
+
+  // Elevatex (uses public traffic feed — no auth required)
+  if (lmElevatexUsers.length) {
+    try {
+      const res = await axios.get('https://api.elevatex.app/live/elvtx-traffic.json', { timeout: 10000 });
+      const flights = Array.isArray(res.data) ? res.data : [];
+      for (const user of lmElevatexUsers) {
+        const ef = flights.find(f => f.userId === user.userId && !f.completed && !f.cancelled && f.position);
+        if (!ef) continue;
+        const pos = ef.position;
+        entries.push({
+          source: 'Elevatex', username: user.username, userId: user.userId,
+          discordId: user.discordId || null,
+          lat: pos.latitude, lon: pos.longitude, heading: pos.heading || 0,
+          altitude: pos.altitude, speed: pos.groundSpeed,
+          origin: ef.origin?.icao || '???', dest: ef.destination?.icao || '???',
+          originLat: ef.origin?.latitude ?? null, originLon: ef.origin?.longitude ?? null,
+          destLat: ef.destination?.latitude ?? null, destLon: ef.destination?.longitude ?? null,
+          aircraft: ef.aircraftIcao || ef.aircraft?.typeCode || 'Unknown',
+          callsign: ef.callsign || '-',
+        });
+      }
+    } catch(_) {}
+  }
+
+  return entries;
+}
+
+// Composite avatar dots / colored dots onto world basemap
+async function buildLiveMapImage(client, entries) {
+  await ensureWorldBasemap();
+  const base = await Jimp.read(WORLD_BASEMAP_PATH);
+
+  if (!liveMapFont) {
+    try {
+      const { loadFont } = require("jimp");
+      const path = require("path");
+      const fontPath = path.join(__dirname, "node_modules/@jimp/plugin-print/fonts/open-sans/open-sans-8-white/open-sans-8-white.fnt");
+      liveMapFont = await loadFont(fontPath);
+    } catch(_) {}
+  }
+
+  const COLORS = { Volanta: [0x4f, 0xc3, 0xf7], Vatsim: [0x66, 0xbb, 0x6a], Elevatex: [0xff, 0x66, 0x00] };
+
+  // --- Step 1: compute crop region from pilots + origins + dests ---
+  const validPx = [];
+  for (const e of entries) {
+    if (e.lat != null && e.lon != null) validPx.push(liveMapLatLonToPixel(e.lat, e.lon));
+    if (e.originLat != null && e.originLon != null) validPx.push(liveMapLatLonToPixel(e.originLat, e.originLon));
+    if (e.destLat != null && e.destLon != null) validPx.push(liveMapLatLonToPixel(e.destLat, e.destLon));
+  }
+
+  let cropX = 0, cropY = 0, cropW = LIVE_MAP_W, cropH = LIVE_MAP_H;
+
+  if (validPx.length > 0) {
+    const xs = validPx.map(p => p.x);
+    const ys = validPx.map(p => p.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const spanX = maxX - minX;
+    const spanY = maxY - minY;
+    const rel = Math.max(spanX / LIVE_MAP_W, spanY / LIVE_MAP_H);
+
+    let padX = null, padY = null;
+    if (rel <= 0.55) {
+      if (rel > 0.15) {
+        padX = Math.max(100, Math.round(spanX * 0.5));
+        padY = Math.max(100, Math.round(spanY * 0.5));
+      } else {
+        padX = Math.max(100, Math.round(spanX * 0.9));
+        padY = Math.max(100, Math.round(spanY * 0.9));
+      }
+    }
+
+    if (padX !== null) {
+      const cx = Math.round((minX + maxX) / 2);
+      const cy = Math.round((minY + maxY) / 2);
+      let halfW = Math.round(spanX / 2) + padX;
+      let halfH = Math.round(spanY / 2) + padY;
+      const ar = LIVE_MAP_W / LIVE_MAP_H;
+      if (halfW / halfH < ar) halfW = Math.round(halfH * ar);
+      else halfH = Math.round(halfW / ar);
+      const cX = Math.max(0, cx - halfW);
+      const cY = Math.max(0, cy - halfH);
+      const cW = Math.min(LIVE_MAP_W - cX, (cx + halfW) - cX);
+      const cH = Math.min(LIVE_MAP_H - cY, (cy + halfH) - cY);
+      if (cW > 50 && cH > 50) {
+        cropX = cX; cropY = cY; cropW = cW; cropH = cH;
+        base.crop({ x: cropX, y: cropY, w: cropW, h: cropH });
+        base.resize({ w: LIVE_MAP_W, h: LIVE_MAP_H });
+      }
+    }
+  }
+
+  // Remap world-pixel coords into cropped+resized space
+  const remap = (wx, wy) => ({
+    x: Math.round((wx - cropX) / cropW * LIVE_MAP_W),
+    y: Math.round((wy - cropY) / cropH * LIVE_MAP_H),
+  });
+
+  // --- Step 2: draw overlays onto the already-cropped basemap ---
+  for (const e of entries) {
+    if (e.lat == null || e.lon == null) continue;
+    const wp = liveMapLatLonToPixel(e.lat, e.lon);
+    const { x, y } = remap(wp.x, wp.y);
+    if (x < 16 || x >= LIVE_MAP_W - 16 || y < 16 || y >= LIVE_MAP_H - 16) continue;
+
+    const [cr, cg, cb] = e.isActive ? (COLORS[e.source] || [0xff, 0xff, 0xff]) : [0x88, 0x88, 0x88];
+
+    // Route line (Bresenham)
+    if (e.isActive && e.originLat != null && e.destLat != null) {
+      const owp = liveMapLatLonToPixel(e.originLat, e.originLon);
+      const dwp = liveMapLatLonToPixel(e.destLat, e.destLon);
+      const op = remap(owp.x, owp.y);
+      const dp = remap(dwp.x, dwp.y);
+      let rx = op.x, ry = op.y;
+      const rdx = Math.abs(dp.x - rx), rdy = Math.abs(dp.y - ry);
+      const rsx = rx < dp.x ? 1 : -1, rsy = ry < dp.y ? 1 : -1;
+      let re = rdx - rdy;
+      while (true) {
+        if (rx >= 0 && rx < LIVE_MAP_W && ry >= 0 && ry < LIVE_MAP_H) {
+          const li = base.getPixelIndex(rx, ry);
+          base.bitmap.data[li] = cr; base.bitmap.data[li + 1] = cg;
+          base.bitmap.data[li + 2] = cb; base.bitmap.data[li + 3] = 0x66;
+        }
+        if (rx === dp.x && ry === dp.y) break;
+        const re2 = 2 * re;
+        if (re2 > -rdy) { re -= rdy; rx += rsx; }
+        if (re2 < rdx)  { re += rdx; ry += rsy; }
+      }
+    }
+
+    // Avatar or colored dot
+    const avatar = (Jimp && e.discordId) ? await getLiveMapAvatar(client, e.discordId) : null;
+    if (avatar) {
+      const av = avatar.clone();
+      av.scan(0, 0, 28, 28, (ax, ay, idx) => {
+        const d = Math.sqrt((ax - 14) * (ax - 14) + (ay - 14) * (ay - 14));
+        if (d >= 12 && d <= 14) {
+          av.bitmap.data[idx] = cr; av.bitmap.data[idx + 1] = cg;
+          av.bitmap.data[idx + 2] = cb; av.bitmap.data[idx + 3] = 0xff;
+        }
+      });
+      base.composite(av, x - 14, y - 14);
+    } else {
+      const R = 5;
+      for (let py = Math.max(0, y - R); py <= Math.min(LIVE_MAP_H - 1, y + R); py++) {
+        for (let px = Math.max(0, x - R); px <= Math.min(LIVE_MAP_W - 1, x + R); px++) {
+          if ((px - x) * (px - x) + (py - y) * (py - y) <= R * R) {
+            const idx = base.getPixelIndex(px, py);
+            base.bitmap.data[idx] = cr; base.bitmap.data[idx + 1] = cg;
+            base.bitmap.data[idx + 2] = cb; base.bitmap.data[idx + 3] = 0xff;
+          }
+        }
+      }
+    }
+
+    if (liveMapFont) base.print({ font: liveMapFont, x: x + 9, y: y - 4, text: e.username });
+  }
+
+  const { JimpMime } = require("jimp");
+  return await base.getBuffer(JimpMime.png);
+}
+
+async function updateLiveMap(client) {
+  try {
+    const channel = client.channels.cache.get(LIVE_MAP_CHANNEL_ID);
+    if (!channel) return;
+
+    let entries = [];
+    try { entries = await liveMapFetchPositions(); } catch(e) { console.error('liveMapFetchPositions error:', e.message); }
+
+    // Persist last known position for every active user
+    for (const e of entries) liveMapLastPositions.set(e.userId, { ...e, lastSeen: Date.now() });
+    if (entries.length) {
+      try { fs.writeFileSync(LIVE_MAP_POSITIONS_PATH, JSON.stringify(Object.fromEntries(liveMapLastPositions), null, 2)); } catch(_) {}
+    }
+    // All known positions: active ones get colour + heading, offline get grey dot
+    const allKnown = [...liveMapLastPositions.values()].map(pos => ({
+      ...pos, isActive: entries.some(e => e.userId === pos.userId),
+    }));
+    const _seenDids = new Set();
+    const dedupedKnown = [...allKnown].sort((a, b) => (b.isActive ? 1 : 0) - (a.isActive ? 1 : 0)).filter(e => {
+      if (!e.discordId) return true;
+      if (_seenDids.has(e.discordId)) return false;
+      _seenDids.add(e.discordId); return true;
+    });
+
+    const imgBuf = Jimp
+      ? await buildLiveMapImage(client, dedupedKnown).catch(e => { console.error('buildLiveMapImage error:', e.message); return null; })
+      : null;
+
+    // One button per pilot (max 25 across 5 rows)
+    const buttons = dedupedKnown.slice(0, 25).map(e =>
+      new ButtonBuilder()
+        .setCustomId(`lm_${e.source}_${e.userId}`)
+        .setLabel(e.username)
+        .setEmoji(e.isActive ? '✈️' : '📍')
+        .setStyle(ButtonStyle.Secondary)
+    );
+    const rows = [];
+    for (let i = 0; i < buttons.length; i += 5)
+      rows.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 5)));
+
+    const sources = [...new Set(entries.map(e => e.source))];
+    const embed = new EmbedBuilder()
+      .setTitle('✈️ Live Flight Tracker')
+      .setDescription(entries.length
+        ? `**${entries.length}** pilot${entries.length !== 1 ? 's' : ''} airborne — ${sources.join(', ')}`
+        : allKnown.length ? 'No active flights — showing last known positions.' : 'No position data yet.')
+      .setColor(entries.length ? 0xff6600 : 0x444444)
+      .setFooter({ text: 'Updates every 2 min • Last updated' })
+      .setTimestamp();
+
+    const files = [];
+    if (imgBuf) {
+      files.push(new AttachmentBuilder(imgBuf, { name: 'livemap.png' }));
+    }
+
+    const editPayload   = { embeds: [embed], files, components: rows, attachments: [] };
+    const createPayload = { embeds: [embed], files, components: rows };
+
+    if (liveMapMessageId) {
+      try {
+        const msg = await channel.messages.fetch(liveMapMessageId);
+        await msg.edit(editPayload);
+        return;
+      } catch(_) { liveMapMessageId = null; }
+    }
+
+    const newMsg = await channel.send(createPayload);
+    liveMapMessageId = newMsg.id;
+    try { fs.writeFileSync(LIVE_MAP_STATE_PATH, JSON.stringify({ messageId: liveMapMessageId }, null, 2)); } catch(_) {}
+    console.log('Live map message created:', liveMapMessageId);
+  } catch(e) { console.error('Live map update error:', e.message); }
+}
+
+
+// Live map zoom buttons — detail embed (no Mapbox, preserves API budget)
+client.on('interactionCreate', async interaction => {
+  if (!interaction.isButton() || !interaction.customId.startsWith('lm_')) return;
+  await interaction.deferReply({ ephemeral: true });
+  try {
+    const parts   = interaction.customId.split('_'); // ['lm', source, ...userId]
+    const source  = parts[1];
+    const userId  = parts.slice(2).join('_');
+    const entries = await liveMapFetchPositions();
+    const e = entries.find(en => en.source === source && en.userId === userId);
+    if (!e) {
+      const lastPos = liveMapLastPositions.get(userId);
+      if (!lastPos) { await interaction.editReply({ content: '📍 No position data for this pilot.' }); return; }
+      const altFt  = lastPos.altitude != null ? `${Math.round(lastPos.altitude).toLocaleString()} ft` : 'N/A';
+      const spdKt  = lastPos.speed    != null ? `${Math.round(lastPos.speed)} kt` : 'N/A';
+      const hdg    = lastPos.heading  != null ? `${Math.round(lastPos.heading)}°` : 'N/A';
+      const seenMs = Date.now() - (lastPos.lastSeen || 0);
+      const seenStr = seenMs < 3600000
+        ? `${Math.floor(seenMs / 60000)}m ago`
+        : `${Math.floor(seenMs / 3600000)}h ${Math.floor((seenMs % 3600000) / 60000)}m ago`;
+      const offEmbed = new EmbedBuilder()
+        .setTitle(`📍 ${lastPos.username} — last seen`)
+        .setDescription(`${lastPos.origin} → ${lastPos.dest} • ${seenStr}`)
+        .addFields(
+          { name: '✈️ Aircraft', value: lastPos.aircraft, inline: true },
+          { name: '📟 Callsign',   value: lastPos.callsign, inline: true },
+          { name: '🏔️ Altitude', value: altFt, inline: true },
+          { name: '💨 Speed',      value: spdKt,     inline: true },
+          { name: '🧭 Heading',    value: hdg,        inline: true },
+        )
+        .setColor(0x555555)
+        .setFooter({ text: `Last seen on ${lastPos.source}` })
+        .setTimestamp(lastPos.lastSeen ? new Date(lastPos.lastSeen) : undefined);
+      const offMapBuf = await buildPilotLocalMap(client, { ...lastPos, isActive: false });
+      const offFiles = offMapBuf ? [{ attachment: offMapBuf, name: "pilot_map.png" }] : [];
+      await interaction.editReply({ embeds: [offEmbed], files: offFiles });
+      return;
+    }
+    const SOURCE_COLORS = { Volanta: 0x4fc3f7, Vatsim: 0x66bb6a, Elevatex: 0xff6600 };
+    const altFt  = e.altitude != null ? `${Math.round(e.altitude).toLocaleString()} ft` : 'N/A';
+    const spdKt  = e.speed    != null ? `${Math.round(e.speed)} kt` : 'N/A';
+    const hdg    = e.heading  != null ? `${Math.round(e.heading)}\xb0` : 'N/A';
+    const embed = new EmbedBuilder()
+      .setTitle(`\u2708\ufe0f ${e.username} — ${e.origin} \u2192 ${e.dest}`)
+      .addFields(
+        { name: '\u2708\ufe0f Aircraft', value: e.aircraft, inline: true },
+        { name: '\📟 Callsign',   value: e.callsign, inline: true },
+        { name: '🏔️ Altitude', value: altFt, inline: true },
+        { name: '\💨 Speed',      value: spdKt,     inline: true },
+        { name: '\🧭 Heading',    value: hdg,       inline: true },
+      )
+      .setColor(SOURCE_COLORS[e.source] || 0xffffff)
+      .setFooter({ text: `Source: ${e.source}` })
+      .setTimestamp();
+    await interaction.editReply({ embeds: [embed] });
+  } catch(err) {
+    console.error('Live map button error:', err.message);
+    await interaction.editReply({ content: 'Failed to fetch flight details.' });
+  }
+});
 
 // ====== Emergency Squawk Poller ======
 async function pollEmergencies(client) {
