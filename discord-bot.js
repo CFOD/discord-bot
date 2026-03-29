@@ -29,27 +29,8 @@ const config = {
   relayChannelId: "1412039978057470042", // <-- Add Channel ID for relay
   askWhitelist: [],
   flaggedWords: ["bomb", "kill", "nude", "hack", "virus"],
-  randomMessageChannels: [
-    "1409584122208456856", // Channel 1
-  ],
-  storyChannelId: "1412823067528265858",
   emergencyChannelId: "1412039978057470042", // <-- Add channel ID to receive automatic emergency squawk alerts
-  rageChannelId: "1412039978057470042", // <-- Channel to announce rage mode
   mapboxToken: process.env.MAPBOX_TOKEN,        // <-- Free token from https://mapbox.com (50,000 requests/month free)
-  volantaChannelId: "1412039978057470042",
-  volantaUsers: [
-    { userId: "c8dce899-5b6b-4534-3fb9-08dca7f6f6ee", username: "Celestial" },
-    { userId: "750e3239-b319-402d-902d-7a7723729382", username: "maxpilot95" },
-    { userId: "825dfa11-fbd8-4ce4-e5b9-08da9b1a2a09", username: "fsxaviator1", discordId: "647970458167279655" },
-    { userId: "112ca7fc-a8ea-4b4c-0ede-08db0072901e", username: "banji9940", discordId: "334301384520237068" },
-  ],
-  vatsimUsers: [
-    { cid: "1369606", username: "CF", discordId: "278266066411454474" },
-  ],
-  elevatexUsers: [
-    { userId: "08dda6c4-248f-46fe-8d97-d79f7e5b9723", username: "MaxPilot95" },
-    { userId: "08ddb672-cee2-45f4-86e4-12977d14b005", username: "DeepInTheSand" },
-  ],
 };
 
 // ====== Aviation Constants ======
@@ -509,6 +490,12 @@ const messages = fs
   .split("\n")
   .filter(Boolean);
 
+const chatMessages = fs
+  .readFileSync("messages_extracted.txt", "utf-8")
+  .replace(/\r/g, '')
+  .split('\n')
+  .filter(Boolean);
+
 const messagesB = fs
   .readFileSync("messagesB.txt", "utf-8")
   .replace(/\r/g, '')
@@ -535,6 +522,12 @@ const LIVE_MAP_INTERVAL_MS = 30 * 1000;
 
 let liveMapMessageId = null;
 let liveMapFont = null;
+let vatspyBoundariesCache = null;
+let vatspyBoundariesFetchedAt = 0;
+let vatspyAirportsCache = null;
+let vatspyAirportsCachedAt = 0;
+let vatsimControllersCache = [];
+let vatsimControllersCachedAt = 0;
 const liveMapAvatarCache = new Map(); // discordId -> Jimp image
 try {
   if (fs.existsSync(LIVE_MAP_STATE_PATH)) {
@@ -542,6 +535,7 @@ try {
   }
 } catch(e) {}
 const liveMapLastPositions = new Map(); // userId -> last known position
+const liveMapSimbriefCache = new Map(); // simbriefUsername -> { waypoints, dep, dest, cachedAt }
 try {
   if (fs.existsSync(LIVE_MAP_POSITIONS_PATH)) {
     const saved = JSON.parse(fs.readFileSync(LIVE_MAP_POSITIONS_PATH));
@@ -549,8 +543,6 @@ try {
   }
 } catch(e) {}
 const KNOWN_EMERGENCIES_PATH = path.join(__dirname, 'known_emergencies.json');
-const DEFAULT_STORY_LENGTH = 15;
-
 // ====== Permissions and Settings Functions ======
 let settings = {};
 let permissions = {};
@@ -559,7 +551,6 @@ let triviaScores = {};
 let messageCounts = {};
 const rouletteCooldowns = new Map();
 const rouletteStreaks = new Map(); // userId -> { count, lastMutedAt }
-let rageModeActive = false;
 let emergencyFirstPoll = true;
 const lastVolantaFlightIds = new Map(); // userId -> last seen flight ID
 const lastElevatexFlightIds = new Map(); // userId -> last seen flight ID
@@ -606,8 +597,7 @@ function loadPermissions() {
             permissions = JSON.parse(fs.readFileSync(PERMISSIONS_PATH, "utf8"));
             if (!permissions.features) permissions.features = {};
             if (!permissions.features.ask) permissions.features.ask = { enabled: true, restrictedUsers: [] };
-            if (!permissions.features.story) permissions.features.story = { enabled: true, restrictedUsers: [] };
-            const _featureDefaults = ['spastic','trivia','8ball','roulette','geoguessr','mood','gpsjam','radar','random_messages'];
+            const _featureDefaults = ['spastic','trivia','8ball','roulette','geoguessr','mood','gpsjam','radar'];
             for (const f of _featureDefaults) { if (!permissions.features[f]) permissions.features[f] = { enabled: true }; }
             if (!permissions.globalBlacklist) permissions.globalBlacklist = [];
         } else {
@@ -615,14 +605,13 @@ function loadPermissions() {
             permissions = {
                 globalBlacklist: [],
                 features: {
-                    story: { enabled: true, restrictedUsers: [] },
                     ask: { enabled: true, restrictedUsers: [] }
                 }
             };
         }
     } catch (error) {
         console.error("Fatal error loading permissions.json:", error);
-        permissions = { globalBlacklist: [], features: { story: { restrictedUsers: [] }, ask: { restrictedUsers: [] } } };
+        permissions = { globalBlacklist: [], features: { ask: { restrictedUsers: [] } } };
     }
 }
 
@@ -649,7 +638,7 @@ function saveSettings() {
 
 function setGuildSettings(guildId, newSettings) {
   if (!settings[guildId]) {
-    settings[guildId] = { storyLength: DEFAULT_STORY_LENGTH };
+    settings[guildId] = {};
   }
   Object.assign(settings[guildId], newSettings);
   saveSettings();
@@ -657,10 +646,9 @@ function setGuildSettings(guildId, newSettings) {
 
 function getGuildSettings(guildId) {
   if (!settings[guildId]) {
-    settings[guildId] = { storyLength: DEFAULT_STORY_LENGTH };
+    settings[guildId] = {};
     saveSettings();
   }
-  if (settings[guildId].storyLength === undefined) settings[guildId].storyLength = DEFAULT_STORY_LENGTH;
   return settings[guildId];
 }
 
@@ -676,28 +664,6 @@ const client = new Client({
   ],
   partials: [Partials.Channel],
 });
-
-// ===== Random Server-Wide Messages =====
-async function sendRandomMessageToSpecificChannel(guild) {
-  if (!isFeatureEnabled("random_messages")) return;
-  const channels = guild.channels.cache.filter(
-    (channel) => config.randomMessageChannels.includes(channel.id) && channel.isTextBased()
-  );
-  if (!channels.size) return;
-  const randomChannel = channels.random();
-  const randomMessage = messages[Math.floor(Math.random() * messages.length)];
-  randomChannel.send(randomMessage).catch(console.error);
-}
-
-function scheduleRandomMessage(guild) {
-  const min = 1 * 60 * 60 * 1000;
-  const max = 12 * 60 * 60 * 1000;
-  const delay = Math.floor(Math.random() * (max - min + 1)) + min;
-  setTimeout(async () => {
-    await sendRandomMessageToSpecificChannel(guild);
-    scheduleRandomMessage(guild);
-  }, delay);
-}
 
 // ====== Islamic Prayer Time Scheduler ======
 const ADHAN_PATH = path.join(__dirname, 'adhan.mp3');
@@ -784,55 +750,6 @@ async function playAdhan(client, prayerName) {
   } catch (e) {
     console.error('Adhan playback error:', e.message);
   }
-}
-
-function scheduleRageMode(client) {
-  // Fires at a completely random point within the next 12 hours
-  const delay = Math.floor(Math.random() * 8 * 60 * 60 * 1000);
-  const warningDelay = Math.max(0, delay - 5 * 60 * 1000);
-
-  // 5-minute warning
-  setTimeout(async () => {
-    try {
-      const guild = client.guilds.cache.first();
-      const channel = guild?.channels.cache.get(config.rageChannelId);
-      if (channel) {
-        const rageTs = Math.floor((Date.now() + Math.min(delay - warningDelay, 5 * 60 * 1000)) / 1000);
-        await channel.send(`⚠️ **RAGE MODE IS COMING** — roulette will go into rage mode <t:${rageTs}:R>. Get ready!`);
-      }
-    } catch {}
-  }, warningDelay);
-
-  setTimeout(async () => {
-    rageModeActive = true;
-    // Announce in the rage channel
-    try {
-      const guild = client.guilds.cache.first();
-      if (guild && config.rageChannelId) {
-        const channel = guild.channels.cache.get(config.rageChannelId);
-        if (channel) {
-          await channel.send(
-            '🔴🔴🔴 **RAGE MODE ACTIVATED!** 🔴🔴🔴\n' +
-            'All `/roulette` cooldowns are **removed** and there is **NO SAFE** outcome for the next **30 seconds!**\n' +
-            'Every spin WILL hit someone. GO!'
-          );
-        }
-      }
-    } catch (e) { console.error('Rage mode announce failed:', e.message); }
-
-    // Deactivate after 30 seconds, then schedule the next one
-    setTimeout(async () => {
-      rageModeActive = false;
-      try {
-        const guild = client.guilds.cache.first();
-        if (guild && config.rageChannelId) {
-          const channel = guild.channels.cache.get(config.rageChannelId);
-          if (channel) await channel.send('🟢 **Rage mode over.** Normal roulette rules restored.');
-        }
-      } catch (e) { console.error('Rage mode end announce failed:', e.message); }
-      scheduleRageMode(client);
-    }, 30 * 1000);
-  }, delay);
 }
 
 function loadPersonality() {
@@ -1023,7 +940,6 @@ client.once("ready", async () => {
           type: 1,
           options: [{ name: "name", description: "Feature to toggle", type: 3, required: true, choices: [
             { name: "Ask (AI questions)", value: "ask" },
-            { name: "Story", value: "story" },
             { name: "Spastic of the Day", value: "spastic" },
             { name: "Trivia", value: "trivia" },
             { name: "8 Ball", value: "8ball" },
@@ -1032,7 +948,6 @@ client.once("ready", async () => {
             { name: "Mood Analysis", value: "mood" },
             { name: "GPS Jam", value: "gpsjam" },
             { name: "Radar", value: "radar" },
-            { name: "Random Messages", value: "random_messages" },
           ]}]
         },
         { name: "list", description: "Show the status of all features", type: 1 }
@@ -1059,11 +974,6 @@ client.once("ready", async () => {
       name: "sepsearch",
       description: "Search the messages file",
       options: [{ name: "query", description: "Text to search for", type: 3, required: true }],
-    },
-    {
-      name: "setstorylength",
-      description: "Set the number of lines required before a story is posted",
-      options: [{ name: "lines", description: "Number of lines", type: 4, required: true, min_value: 5, max_value: 50 }],
     },
     {
       name: "ask",
@@ -1104,11 +1014,6 @@ client.once("ready", async () => {
     { name: "roulette", description: "Spin the chamber. 50/50 chance someone gets timed out for 60 seconds." },
     { name: "mostactive", description: "Show the most active chatters in the server." },
     { name: "mood", description: "Analyse the current mood of the server based on recent messages." },
-    {
-      name: "fbi",
-      description: "Pull a random FBI Most Wanted person, or search for someone.",
-      options: [{ name: "search", description: "Search by name or crime", type: 3, required: false }],
-    },
     { name: "gpsjam", description: "Show a live global GPS jamming and interference map." },
     {
       name: "usermood",
@@ -1126,16 +1031,6 @@ client.once("ready", async () => {
       description: "Fetch the latest METAR for an airport.",
       options: [{ name: "icao", description: "The ICAO airport code (e.g. EGLL, KJFK)", type: 3, required: true }],
     },
-    { name: "trackme", description: "Add or update your details on the live flight tracker map.",
-      options: [
-        { name: "username", description: "Display name on the map (defaults to your Discord name)", type: 3, required: false },
-        { name: "volanta",  description: "Your Volanta user ID", type: 3, required: false },
-        { name: "elevatex", description: "Your Elevatex user ID", type: 3, required: false },
-        { name: "vatsim",   description: "Your VATSIM CID", type: 3, required: false },
-        { name: "remove",   description: "Remove yourself from the live map", type: 5, required: false },
-      ]
-    },
-    { name: "whosflying", description: "Check if anyone is currently flying in MSFS on Volanta." },
     {
       name: 'list',
       description: 'Post or refresh a to-do list in this channel.',
@@ -1181,35 +1076,19 @@ client.once("ready", async () => {
     },
   ];
 
-  client.guilds.cache.forEach(guild => {
-    scheduleRandomMessage(guild);
-  });
-
-  // Start rage mode scheduler
-  scheduleRageMode(client);
-  console.log("Rage mode scheduler started.");
-
   // Schedule daily auto-purge at 4:30am UTC
   scheduleAutoPurge(client);
 
-  // Start Volanta flight poller
-  if (config.volantaUsers?.length && config.volantaChannelId) {
-    setInterval(() => pollVolantaFlights(client), 5 * 60 * 1000);
-    console.log('Volanta flight poller started.');
-  if (config.elevatexUsers?.length && config.volantaChannelId) {
-    pollElevatexFlights(client);
-    setInterval(() => pollElevatexFlights(client), 5 * 60 * 1000);
-    console.log('Elevatex flight poller started.');
   // Live map
   updateLiveMap(client);
   setInterval(() => updateLiveMap(client), LIVE_MAP_INTERVAL_MS);
   console.log('Live map started.');
-  }
-  }
 
   // Start emergency squawk polling (disabled - re-enable by removing `false &&`)
-  if (false && config.emergencyChannelId) {
+  if (config.emergencyChannelId) {
     setInterval(() => pollEmergencies(client), 5 * 60 * 1000);
+    pollVolantaFlights(client);
+    setInterval(() => pollVolantaFlights(client), 5 * 60 * 1000);
     console.log("Emergency squawk polling started.");
   }
 
@@ -1328,9 +1207,8 @@ client.on("interactionCreate", async (interaction) => {
             { name: "/david", value: "Make retard speak", inline: false },
             { name: "/trivia", value: "Start a trivia question — first to answer wins a point!", inline: false },
             { name: "/triviascores", value: "Show the trivia leaderboard", inline: false },
-            { name: "/roulette", value: "Spin the chamber — 50/50 chance someone gets timed out for 60s (RAGE MODE: no cooldowns, no safe slot!)", inline: false },
+            { name: "/roulette", value: "Spin the chamber — someone gets timed out, or land on the safe slot", inline: false },
             { name: "/8ball <question>", value: "Ask the magic 8 ball a question", inline: false },
-            { name: "/fbi [search]", value: "Get a random FBI Most Wanted person (optional: search by name or crime)", inline: false },
           ],
         },
         {
@@ -1350,7 +1228,6 @@ client.on("interactionCreate", async (interaction) => {
           fields: [
             { name: "/unmute <user>", value: "Unmute a user in voice chat", inline: false },
             { name: "/removetimeout <user>", value: "Remove a user's text chat timeout", inline: false },
-            { name: "/setstorylength <lines>", value: "Set the story length (5–50 lines)", inline: false },
             { name: "/sepsearch <query>", value: "Search the SepataBase", inline: false },
             { name: "/mostactive", value: "Show the most active chatters in the server", inline: false },
           ],
@@ -1625,12 +1502,7 @@ client.on("interactionCreate", async (interaction) => {
       await playAdhan(client, 'Test');
       break;
     }
-    case "setstorylength": {
-      const lines = interaction.options.getInteger("lines");
-      setGuildSettings(interaction.guildId, { storyLength: lines });
-      await interaction.reply({ content: `Story length set to **${lines}** lines.`, ephemeral: true });
-      break;
-    }
+
     case "setpersonality": {
       if (!config.personalityUsers.includes(interaction.user.id)) {
         await interaction.reply({ content: "You do not have permission to use this command.", ephemeral: true });
@@ -1685,8 +1557,7 @@ client.on("interactionCreate", async (interaction) => {
         "Step 1. Get some bitches. Step 2. Go outside",
       ];
 
-      const josepQuote = messages[Math.floor(Math.random() * messages.length)];
-      const allAnswers = [...defaultAnswers, ...customAnswers, josepQuote];
+      const allAnswers = [...defaultAnswers, ...customAnswers, ...chatMessages];
       const answer = allAnswers[Math.floor(Math.random() * allAnswers.length)];
 
       await interaction.reply(`🎱 **${question}**\n> ${answer}`);
@@ -1793,13 +1664,11 @@ client.on("interactionCreate", async (interaction) => {
     case "roulette": {
       if (!isFeatureEnabled("roulette")) return interaction.reply({ content: '❌ This feature is currently disabled.', ephemeral: true });
       const ROULETTE_COOLDOWN = 5 * 60 * 1000;
-      if (!rageModeActive) {
-        const lastUsed = rouletteCooldowns.get(interaction.user.id) || 0;
-        const remaining = ROULETTE_COOLDOWN - (Date.now() - lastUsed);
-        if (remaining > 0) {
-          const secs = Math.ceil(remaining / 1000);
-          return interaction.reply({ content: `You need to wait **${secs}s** before spinning again.`, ephemeral: true });
-        }
+      const lastUsed = rouletteCooldowns.get(interaction.user.id) || 0;
+      const remaining = ROULETTE_COOLDOWN - (Date.now() - lastUsed);
+      if (remaining > 0) {
+        const secs = Math.ceil(remaining / 1000);
+        return interaction.reply({ content: `You need to wait **${secs}s** before spinning again.`, ephemeral: true });
       }
       rouletteCooldowns.set(interaction.user.id, Date.now());
 
@@ -1817,10 +1686,8 @@ client.on("interactionCreate", async (interaction) => {
       const allMembers = await interaction.guild.members.list({ limit: 1000 });
       const eligible = [...allMembers.filter(m => !m.user.bot && !ROULETTE_EXEMPT.has(m.id)).values()];
 
-      // Wheel: one slot per member + one safe slot at the end (safe removed during rage mode)
-      const wheel = rageModeActive
-        ? [...eligible.map(m => ({ label: m.displayName, member: m }))]
-        : [...eligible.map(m => ({ label: m.displayName, member: m })), { label: '🛡️ SAFE', member: null }];
+      // Wheel: one slot per member + one safe slot at the end
+      const wheel = [...eligible.map(m => ({ label: m.displayName, member: m })), { label: '🛡️ SAFE', member: null }];
       const totalSlots = wheel.length;
 
       const renderWheel = (pos) => {
@@ -1834,7 +1701,7 @@ client.on("interactionCreate", async (interaction) => {
       // Pre-determine outcome
       const RIGGED_USER_ID = "1185384902200401931";
       const isRiggedUser = interaction.user.id === RIGGED_USER_ID;
-      const isBang = rageModeActive || isRiggedUser || Math.random() < 0.5;
+      const isBang = isRiggedUser || Math.random() < 0.5;
       const targetMember = isBang
         ? (isRiggedUser ? eligible.find(m => m.id === RIGGED_USER_ID) ?? eligible[Math.floor(Math.random() * eligible.length)] : eligible[Math.floor(Math.random() * eligible.length)])
         : null;
@@ -1899,8 +1766,8 @@ client.on("interactionCreate", async (interaction) => {
           const streakSuffix = currentStreak > 0 ? ` *(${currentStreak + 1}x in a row — streak penalty!)*` : '';
           await interaction.editReply({ content: `💥 **BANG!** <@${targetMember.id}> — enjoy your **${durationLabel}** of silence.${streakSuffix}` });
 
-          // 4% chance of double or nothing (not during rage mode)
-          if (!rageModeActive && Math.random() < 0.04) {
+          // 4% chance of double or nothing
+          if (Math.random() < 0.04) {
             try {
               const tRes = await axios.get('https://opentdb.com/api.php?amount=1&type=multiple', { timeout: 5000 });
               const q = tRes.data.results?.[0];
@@ -2397,90 +2264,6 @@ ${sample.join(String.fromCharCode(10))}`;
       await interaction.reply({ embeds: [activeEmbed] });
       break;
     }
-    case "fbi": {
-      await interaction.deferReply();
-      try {
-        const search = interaction.options.getString("search");
-        const randomPage = Math.ceil(Math.random() * 8);
-        const apiUrl = search
-          ? `https://api.fbi.gov/wanted/v1/list?title=${encodeURIComponent(search)}&pageSize=10`
-          : `https://api.fbi.gov/wanted/v1/list?pageSize=20&page=${randomPage}`;
-
-        const res = await axios.get(apiUrl, {
-          timeout: 10000,
-          headers: {
-            'Accept': 'application/json',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          },
-        });
-        const items = res.data.items;
-
-        if (!items || !items.length) {
-          return interaction.editReply(search ? `No results found for **${search}**.` : 'Could not fetch the wanted list.');
-        }
-
-        const person = search ? items[0] : items[Math.floor(Math.random() * items.length)];
-
-        const embed = new EmbedBuilder()
-          .setTitle('🔴  FBI MOST WANTED')
-          .setDescription(`## ${person.title}`)
-          .setColor(0xcc0000)
-          .setURL(person.url || 'https://www.fbi.gov/wanted');
-
-        // www.fbi.gov blocks datacenter IPs via Cloudflare — proxy through images.weserv.nl
-        let photoAttachment = null;
-        const rawImgUrl = person.images?.[0]?.large || person.images?.[0]?.original || person.images?.[0]?.thumb;
-        if (rawImgUrl) {
-          try {
-            const proxied = `https://images.weserv.nl/?url=${encodeURIComponent(rawImgUrl.replace('https://', ''))}`;
-            const imgRes = await axios.get(proxied, { responseType: 'arraybuffer', timeout: 10000 });
-            photoAttachment = new AttachmentBuilder(Buffer.from(imgRes.data), { name: 'wanted.jpg' });
-            embed.setImage('attachment://wanted.jpg');
-          } catch (photoErr) {
-            console.error('FBI photo error:', photoErr.message);
-          }
-        }
-
-        if (person.subjects?.length) {
-          embed.addFields({ name: '⚖️ Wanted For', value: person.subjects.join(', '), inline: false });
-        }
-
-        if (person.reward_text) {
-          embed.addFields({ name: '💰 Reward', value: person.reward_text, inline: true });
-        } else if (person.reward_max > 0) {
-          embed.addFields({ name: '💰 Reward', value: `Up to $${person.reward_max.toLocaleString()}`, inline: true });
-        }
-
-        if (person.aliases?.length) {
-          embed.addFields({ name: '🎭 Also Known As', value: person.aliases.join(', ').substring(0, 256), inline: false });
-        }
-
-        const phys = [];
-        if (person.sex)         phys.push(`**Sex:** ${person.sex}`);
-        if (person.race_raw)    phys.push(`**Race:** ${person.race_raw}`);
-        if (person.age_range)   phys.push(`**Age:** ${person.age_range}`);
-        if (person.height_min)  { const ft = Math.floor(person.height_min / 12); phys.push(`**Height:** ${ft}'${person.height_min % 12}"`); }
-        if (person.weight)      phys.push(`**Weight:** ${person.weight}`);
-        if (person.hair_raw)    phys.push(`**Hair:** ${person.hair_raw}`);
-        if (person.eyes_raw)    phys.push(`**Eyes:** ${person.eyes_raw}`);
-        if (phys.length) embed.addFields({ name: '👤 Physical', value: phys.join('  •  '), inline: false });
-
-        const desc = person.description?.replace(/<[^>]*>/g, '').trim();
-        if (desc) embed.addFields({ name: '📋 Details', value: desc.substring(0, 1024), inline: false });
-
-        const caution = person.caution?.replace(/<[^>]*>/g, '').trim();
-        if (caution) embed.addFields({ name: '⚠️ Caution', value: caution.length > 1020 ? caution.substring(0, 1020) + '…' : caution, inline: false });
-
-        embed.setFooter({ text: 'Source: FBI Most Wanted API  •  tips.fbi.gov  •  1-800-CALL-FBI' });
-        const replyPayload = { embeds: [embed] };
-        if (photoAttachment) replyPayload.files = [photoAttachment];
-        await interaction.editReply(replyPayload);
-      } catch (err) {
-        console.error('FBI error:', err.message);
-        await interaction.editReply('Failed to fetch FBI data.');
-      }
-      break;
-    }
 
     case "gpsjam": {
       if (!isFeatureEnabled("gpsjam")) return interaction.reply({ content: '❌ This feature is currently disabled.', ephemeral: true });
@@ -2581,467 +2364,6 @@ ${sample.join(String.fromCharCode(10))}`;
       break;
     }
 
-    case "trackme": {
-      const isRemove = interaction.options.getBoolean("remove");
-      const discordId = interaction.user.id;
-      let lmUsers = {};
-      try { if (fs.existsSync(LIVE_MAP_USERS_PATH)) lmUsers = JSON.parse(fs.readFileSync(LIVE_MAP_USERS_PATH)); } catch(_) {}
-
-      if (isRemove) {
-        if (lmUsers[discordId]) {
-          delete lmUsers[discordId];
-          fs.writeFileSync(LIVE_MAP_USERS_PATH, JSON.stringify(lmUsers, null, 2));
-          await interaction.reply({ content: "✅ You've been removed from the live map.", ephemeral: true });
-        } else {
-          await interaction.reply({ content: "You're not currently on the live map.", ephemeral: true });
-        }
-        break;
-      }
-
-      const newUsername  = interaction.options.getString("username");
-      const newVolanta   = interaction.options.getString("volanta");
-      const newElevatex  = interaction.options.getString("elevatex");
-      const newVatsim    = interaction.options.getString("vatsim");
-      const anyChange = newUsername || newVolanta || newElevatex || newVatsim;
-
-      const existing = lmUsers[discordId] || {};
-
-      // Show current status if no fields provided
-      if (!anyChange) {
-        if (!existing.discordId) {
-          await interaction.reply({ content: "You're not on the live map yet. Use `/trackme` with your Volanta, Elevatex, or VATSIM ID to add yourself.", ephemeral: true });
-        } else {
-          const lines = [
-            `📍 **${existing.username}** — current registration:`,
-            existing.volantaId  ? `• Volanta: \`${existing.volantaId}\``  : "• Volanta: not set",
-            existing.elevatexId ? `• Elevatex: \`${existing.elevatexId}\`` : "• Elevatex: not set",
-            existing.vatsimCid  ? `• VATSIM: \`${existing.vatsimCid}\``   : "• VATSIM: not set",
-          ].join("\n");
-          await interaction.reply({ content: lines, ephemeral: true });
-        }
-        break;
-      }
-
-      // Build updated entry
-      lmUsers[discordId] = {
-        discordId,
-        username:   newUsername   || existing.username   || (interaction.member?.displayName ?? interaction.user.username),
-        volantaId:  newVolanta    !== null ? newVolanta   : (existing.volantaId  || null),
-        elevatexId: newElevatex   !== null ? newElevatex  : (existing.elevatexId || null),
-        vatsimCid:  newVatsim     !== null ? newVatsim    : (existing.vatsimCid  || null),
-      };
-      const u = lmUsers[discordId];
-
-      if (!u.volantaId && !u.elevatexId && !u.vatsimCid) {
-        await interaction.reply({ content: "⚠️ You need at least one tracker ID — Volanta, Elevatex, or VATSIM CID.", ephemeral: true });
-        break;
-      }
-
-      fs.writeFileSync(LIVE_MAP_USERS_PATH, JSON.stringify(lmUsers, null, 2));
-      const lines = [
-        `✅ **${u.username}** added to the live map!`,
-        u.volantaId  ? `• Volanta: \`${u.volantaId}\``  : null,
-        u.elevatexId ? `• Elevatex: \`${u.elevatexId}\`` : null,
-        u.vatsimCid  ? `• VATSIM: \`${u.vatsimCid}\``   : null,
-        "",
-        "Your Discord profile picture will show on the map when you're flying.",
-      ].filter(l => l !== null).join("\n");
-      await interaction.reply({ content: lines, ephemeral: true });
-      break;
-    }
-
-    case "whosflying": {
-      await interaction.deferReply();
-
-      // Airport coord cache — persists across refreshes so we don't re-fetch unchanged routes
-      const airportCache = {};
-      const lookupAirports = async (...icaos) => {
-        const missing = icaos.filter(id => id && id !== '???' && !airportCache[id]);
-        if (!missing.length) return;
-        try {
-          const res = await axios.get(
-            `https://aviationweather.gov/api/data/airport?ids=${missing.join(',')}&format=json`,
-            { timeout: 8000 }
-          );
-          for (const ap of (res.data || [])) airportCache[ap.icaoId] = { lat: ap.lat, lon: ap.lon };
-        } catch (_) {}
-      };
-
-      // ---- Fetch current flights ----
-      const fetchFlying = async () => {
-        const flying = [];
-
-        if (config.volantaUsers?.length) {
-          try {
-            const feedRes = await axios.get('https://webassets.volanta.app/volanta-flight-positions.json', { timeout: 10000 });
-            const feedEntries = feedRes.data?.data || [];
-            for (const user of config.volantaUsers) {
-              const entry = feedEntries.find(e => e.networkUserId === user.userId && e.privacyOption !== 'Private');
-              if (!entry) continue;
-              await lookupAirports(entry.originIcao, entry.destinationIcao);
-              const originCoords = airportCache[entry.originIcao] || null;
-              const destCoords   = airportCache[entry.destinationIcao] || null;
-              flying.push({ source: 'Volanta', user, entry, originCoords, destCoords });
-            }
-          } catch (_) {}
-        }
-
-        if (config.vatsimUsers?.length) {
-          try {
-            const vRes = await axios.get('https://data.vatsim.net/v3/vatsim-data.json', { timeout: 15000 });
-            const vPilots = vRes.data?.pilots || [];
-            for (const vu of config.vatsimUsers) {
-              const pilot = vPilots.find(p => String(p.cid) === String(vu.cid));
-              if (!pilot) continue;
-              await lookupAirports(pilot.flight_plan?.departure, pilot.flight_plan?.arrival);
-              const originCoords = airportCache[pilot.flight_plan?.departure] || null;
-              const destCoords   = airportCache[pilot.flight_plan?.arrival]   || null;
-              flying.push({ source: 'Vatsim', user: vu, pilot, originCoords, destCoords });
-            }
-          } catch (_) {}
-        }
-
-        if (config.elevatexUsers?.length) {
-          try {
-            const exRes = await axios.get('https://api.elevatex.app/live/elvtx-traffic.json', { timeout: 10000 });
-            const allFlights = Array.isArray(exRes.data) ? exRes.data : [];
-            for (const user of config.elevatexUsers) {
-              const ef = allFlights.find(f => f.userId === user.userId && !f.completed && !f.cancelled && f.position);
-              if (!ef) continue;
-              const originCoords = ef.origin ? { lat: ef.origin.latitude, lon: ef.origin.longitude } : null;
-              const destCoords   = ef.destination ? { lat: ef.destination.latitude, lon: ef.destination.longitude } : null;
-              flying.push({ source: 'Elevatex', user, flight: ef, originCoords, destCoords });
-            }
-          } catch (_) {}
-        }
-
-        return flying;
-      };
-
-      // ---- Jimp map builder ----
-      const buildFlightMap = async (mapPoints, routeSegs, W = 900, H = 450) => {
-        const lats = mapPoints.map(p => p.lat);
-        const lons = mapPoints.map(p => p.lon);
-        const minLat = Math.min(...lats), maxLat = Math.max(...lats);
-        const minLon = Math.min(...lons), maxLon = Math.max(...lons);
-        const centerLat = (minLat + maxLat) / 2;
-        const centerLon = (minLon + maxLon) / 2;
-
-        const PADDING = 90;
-        let zoom = 1;
-        for (let z = 10; z >= 1; z--) {
-          const wPx = 512 * Math.pow(2, z);
-          const lToWx = l => (l + 180) / 360 * wPx;
-          const lToWy = l => { const r = l * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * wPx; };
-          const cWx = lToWx(centerLon), cWy = lToWy(centerLat);
-          const xs = lons.map(l => lToWx(l) - cWx + W / 2);
-          const ys = lats.map(l => lToWy(l) - cWy + H / 2);
-          if (Math.min(...xs) >= PADDING && Math.max(...xs) <= W - PADDING &&
-              Math.min(...ys) >= PADDING && Math.max(...ys) <= H - PADDING) {
-            zoom = z; break;
-          }
-        }
-
-        const basemapUrl = `https://api.mapbox.com/styles/v1/mapbox/dark-v11/static/${centerLon.toFixed(4)},${centerLat.toFixed(4)},${zoom}/${W}x${H}?access_token=${config.mapboxToken}`;
-        const basemapRes = await axios.get(basemapUrl, { responseType: 'arraybuffer', timeout: 20000 });
-        const image = await (typeof Jimp.fromBuffer === 'function' ? Jimp.fromBuffer(Buffer.from(basemapRes.data)) : Jimp.read(Buffer.from(basemapRes.data)));
-
-        const worldPx = 512 * Math.pow(2, zoom);
-        const lonToWx = l => (l + 180) / 360 * worldPx;
-        const latToWy = l => { const r = l * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * worldPx; };
-        const cWx = lonToWx(centerLon), cWy = latToWy(centerLat);
-        const toPixel = (lon, lat) => ({ x: Math.round(lonToWx(lon) - cWx + W / 2), y: Math.round(latToWy(lat) - cWy + H / 2) });
-        const setPixel = (x, y, c) => { if (x >= 0 && x < W && y >= 0 && y < H) image.setPixelColor(c, x, y); };
-
-        const drawLine = (x0, y0, x1, y1, c, width = 2) => {
-          x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
-          const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0);
-          const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
-          let err = dx - dy, x = x0, y = y0;
-          const hw = Math.floor(width / 2);
-          while (true) {
-            for (let w = -hw; w <= hw; w++) {
-              if (dy >= dx) setPixel(x + w, y, c); else setPixel(x, y + w, c);
-            }
-            if (x === x1 && y === y1) break;
-            const e2 = 2 * err;
-            if (e2 > -dy) { err -= dy; x += sx; }
-            if (e2 < dx)  { err += dx; y += sy; }
-          }
-        };
-
-        const drawDashedLine = (x0, y0, x1, y1, c, dashLen = 10, gapLen = 5) => {
-          const dx = x1 - x0, dy = y1 - y0;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist === 0) return;
-          const ux = dx / dist, uy = dy / dist;
-          let d = 0, on = true, seg = 0;
-          while (d <= dist) {
-            if (on) {
-              const px = Math.round(x0 + ux * d), py = Math.round(y0 + uy * d);
-              for (let w = -1; w <= 1; w++) {
-                if (Math.abs(dy) >= Math.abs(dx)) setPixel(px + w, py, c); else setPixel(px, py + w, c);
-              }
-            }
-            d += 1; seg++;
-            if (on  && seg >= dashLen) { on = false; seg = 0; }
-            else if (!on && seg >= gapLen)  { on = true;  seg = 0; }
-          }
-        };
-
-        const drawDot = (cx, cy, c, r) => {
-          for (let dx = -r; dx <= r; dx++)
-            for (let dy = -r; dy <= r; dy++)
-              if (dx * dx + dy * dy <= r * r) setPixel(cx + dx, cy + dy, c);
-        };
-
-        const fillTriangle = (p1, p2, p3, c) => {
-          const pts = [p1, p2, p3].sort((a, b) => a[1] - b[1]);
-          const [[x0, y0], [x1, y1], [x2, y2]] = pts;
-          for (let y = Math.floor(y0); y <= Math.ceil(y2); y++) {
-            const xLong  = y0 === y2 ? x0 : x0 + (y - y0) / (y2 - y0) * (x2 - x0);
-            const xShort = y <= y1
-              ? (y0 === y1 ? x0 : x0 + (y - y0) / (y1 - y0) * (x1 - x0))
-              : (y1 === y2 ? x1 : x1 + (y - y1) / (y2 - y1) * (x2 - x1));
-            for (let x = Math.floor(Math.min(xLong, xShort)); x <= Math.ceil(Math.max(xLong, xShort)); x++)
-              setPixel(x, y, c);
-          }
-        };
-
-        const drawPlane = (cx, cy, headingDeg, c) => {
-          const ang = headingDeg * Math.PI / 180;
-          const fX = Math.sin(ang), fY = -Math.cos(ang);
-          const rX = Math.cos(ang), rY =  Math.sin(ang);
-          const pt = (f, r) => [Math.round(cx + fX * f + rX * r), Math.round(cy + fY * f + rY * r)];
-          fillTriangle(pt(17, 0), pt(-5, -15), pt(-5, 15), c);
-          fillTriangle(pt(-5, 0), pt(-15, -8), pt(-15, 8), c);
-        };
-
-        for (const seg of routeSegs) {
-          for (let i = 0; i < seg.points.length - 1; i++) {
-            const a = toPixel(seg.points[i].lon, seg.points[i].lat);
-            const b = toPixel(seg.points[i + 1].lon, seg.points[i + 1].lat);
-            if (seg.dashed) drawDashedLine(a.x, a.y, b.x, b.y, seg.color, 12, 6);
-            else            drawLine(a.x, a.y, b.x, b.y, seg.color, seg.width || 2);
-          }
-        }
-
-        for (const p of mapPoints) {
-          const { x, y } = toPixel(p.lon, p.lat);
-          if (p.role === 'origin') {
-            drawDot(x, y, 0x00cc44ff, 7); drawDot(x, y, 0xffffffff, 3);
-          } else if (p.role === 'dest') {
-            drawDot(x, y, 0xff4444ff, 7); drawDot(x, y, 0xffffffff, 3);
-          } else if (p.role === 'plane') {
-            drawPlane(x + 1, y + 1, p.heading, 0x00000099);
-            drawPlane(x, y, p.heading, p.color);
-          }
-        }
-
-        return image.getBuffer('image/png');
-      };
-
-      // ---- Build embed pages from flight data ----
-      const buildPages = async (flying) => {
-        const updatedAt = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        const pages = [];
-
-        for (const entry of flying) {
-          let embed, imgBuf = null;
-
-          if (entry.source === 'volanta') {
-            const { user, entry: fe, originCoords, destCoords } = entry;
-            const pos      = fe.position || {};
-            const origin   = fe.originIcao || '???';
-            const dest     = fe.destinationIcao || '???';
-            const aircraft = fe.aircraftIcao || 'Unknown';
-            const callsign = fe.callsign || fe.flightNumber || '-';
-            const altFt    = pos.altitude     != null ? `${Math.round(pos.altitude).toLocaleString()} ft` : 'Unknown';
-            const speedKt  = pos.groundSpeed  != null ? `${Math.round(pos.groundSpeed)} kt` : 'Unknown';
-            const heading  = pos.headingTrue  != null ? `${Math.round(pos.headingTrue)}°` : 'Unknown';
-            const vsStr    = pos.verticalSpeed != null ? ` (${pos.verticalSpeed >= 0 ? '+' : ''}${Math.round(pos.verticalSpeed)} fpm)` : '';
-            embed = new EmbedBuilder()
-              .setTitle(`✈️ ${user.username} is flying!`)
-              .setColor(0x00bfff)
-              .setURL(`https://fly.volanta.app/profile/${user.username}/flights`)
-              .addFields(
-                { name: '🛫 Route', value: `**${origin}** → **${dest}**`, inline: false },
-                { name: '✈️ Aircraft', value: aircraft, inline: true },
-                { name: '📟 Callsign', value: callsign, inline: true },
-                { name: '🏔️ Altitude', value: `${altFt}${vsStr}`, inline: true },
-                { name: '💨 Speed', value: speedKt, inline: true },
-                { name: '🧭 Heading', value: heading, inline: true },
-              )
-              .setTimestamp()
-              .setFooter({ text: `Source: Volanta • Updated ${updatedAt}` });
-
-            if (Jimp && pos.latitude != null && pos.longitude != null && config.mapboxToken) {
-              try {
-                const mapPoints = [], flownSeg = [], remainSeg = [];
-                if (originCoords) { mapPoints.push({ ...originCoords, role: 'origin' }); flownSeg.push({ points: [originCoords, { lat: pos.latitude, lon: pos.longitude }], color: 0x4499ccff, width: 2 }); }
-                if (destCoords)   { mapPoints.push({ ...destCoords,   role: 'dest'   }); remainSeg.push({ points: [{ lat: pos.latitude, lon: pos.longitude }, destCoords], color: 0x334455ff, width: 2, dashed: true }); }
-                mapPoints.push({ lat: pos.latitude, lon: pos.longitude, role: 'plane', heading: pos.headingTrue || 0, color: 0x00bfffff });
-                imgBuf = await buildFlightMap(mapPoints, [...flownSeg, ...remainSeg]);
-                embed.setImage('attachment://flightmap.png');
-              } catch (_) {}
-            }
-
-          } else if (entry.source === 'vatsim') {
-            const { user, pilot, originCoords, destCoords } = entry;
-            const fp       = pilot.flight_plan;
-            const origin   = fp?.departure || '???';
-            const dest     = fp?.arrival   || '???';
-            const aircraft = fp?.aircraft_short || fp?.aircraft || 'Unknown';
-            const callsign = pilot.callsign || '-';
-            const elapsed  = Math.floor((Date.now() - new Date(pilot.logon_time).getTime()) / 1000);
-            const timeOnline = `${Math.floor(elapsed / 3600)}h ${Math.floor((elapsed % 3600) / 60)}m`;
-            const altFt    = pilot.altitude    != null ? `${pilot.altitude.toLocaleString()} ft` : 'Unknown';
-            const speedKt  = pilot.groundspeed != null ? `${pilot.groundspeed} kt` : 'Unknown';
-            const heading  = pilot.heading     != null ? `${pilot.heading}°` : 'Unknown';
-            embed = new EmbedBuilder()
-              .setTitle(`✈️ ${user.username} is flying on VATSIM!`)
-              .setColor(0x7289da)
-              .setURL(`https://stats.vatsim.net/stats/${user.cid}`)
-              .addFields(
-                { name: '🛫 Route', value: `**${origin}** → **${dest}**`, inline: false },
-                { name: '✈️ Aircraft', value: aircraft, inline: true },
-                { name: '📟 Callsign', value: callsign, inline: true },
-                { name: '⏱️ Online', value: timeOnline, inline: true },
-                { name: '🏔️ Altitude', value: altFt, inline: true },
-                { name: '💨 Speed', value: speedKt, inline: true },
-                { name: '🧭 Heading', value: heading, inline: true },
-              )
-              .setTimestamp()
-              .setFooter({ text: `Source: VATSIM • CID: ${user.cid} • Updated ${updatedAt}` });
-
-            if (Jimp && pilot.latitude != null && pilot.longitude != null && config.mapboxToken) {
-              try {
-                const mapPoints = [], flownSeg = [], remainSeg = [];
-                if (originCoords) {
-                  mapPoints.push({ ...originCoords, role: 'origin' });
-                  flownSeg.push({ points: [originCoords, { lat: pilot.latitude, lon: pilot.longitude }], color: 0x7289daff, width: 2 });
-                }
-                if (destCoords) {
-                  mapPoints.push({ ...destCoords, role: 'dest' });
-                  remainSeg.push({ points: [{ lat: pilot.latitude, lon: pilot.longitude }, destCoords], color: 0x334466ff, width: 2, dashed: true });
-                }
-                mapPoints.push({ lat: pilot.latitude, lon: pilot.longitude, role: 'plane', heading: pilot.heading || 0, color: 0x7289daff });
-                imgBuf = await buildFlightMap(mapPoints, [...flownSeg, ...remainSeg]);
-                embed.setImage('attachment://flightmap.png');
-              } catch (_) {}
-            }
-          } else if (entry.source === 'Elevatex') {
-            const { user, flight: ef, originCoords, destCoords } = entry;
-            const pos      = ef.position || {};
-            const origin   = ef.origin?.icao      || '???';
-            const dest     = ef.destination?.icao || '???';
-            const aircraft = ef.aircraftIcao || ef.aircraft?.typeCode || 'Unknown';
-            const callsign = ef.callsign    || '-';
-            const altFt    = pos.altitude    != null ? `${Math.round(pos.altitude).toLocaleString()} ft` : 'Unknown';
-            const speedKt  = pos.groundSpeed != null ? `${Math.round(pos.groundSpeed)} kt` : 'Unknown';
-            const heading  = pos.heading     != null ? `${Math.round(pos.heading)}°` : 'Unknown';
-            embed = new EmbedBuilder()
-              .setTitle(`✈️ ${user.username} is flying on Elevatex!`)
-              .setColor(0xff6600)
-              .addFields(
-                { name: '🛫 Route', value: `**${origin}** → **${dest}**`, inline: false },
-                { name: '✈️ Aircraft', value: aircraft, inline: true },
-                { name: '📟 Callsign', value: callsign, inline: true },
-                { name: '🏔️ Altitude', value: altFt, inline: true },
-                { name: '💨 Speed', value: speedKt, inline: true },
-                { name: '🧭 Heading', value: heading, inline: true },
-              )
-              .setTimestamp()
-              .setFooter({ text: `Source: Elevatex • Updated ${updatedAt}` });
-
-            if (Jimp && pos.latitude != null && pos.longitude != null && config.mapboxToken) {
-              try {
-                const mapPoints = [], flownSeg = [], remainSeg = [];
-                if (originCoords) { mapPoints.push({ ...originCoords, role: 'origin' }); flownSeg.push({ points: [originCoords, { lat: pos.latitude, lon: pos.longitude }], color: 0xff6600ff, width: 2 }); }
-                if (destCoords)   { mapPoints.push({ ...destCoords,   role: 'dest'   }); remainSeg.push({ points: [{ lat: pos.latitude, lon: pos.longitude }, destCoords], color: 0x553300ff, width: 2, dashed: true }); }
-                mapPoints.push({ lat: pos.latitude, lon: pos.longitude, role: 'plane', heading: pos.heading || 0, color: 0xff6600ff });
-                imgBuf = await buildFlightMap(mapPoints, [...flownSeg, ...remainSeg]);
-                embed.setImage('attachment://flightmap.png');
-              } catch (_) {}
-            }
-          }
-
-          if (embed) pages.push({ embed, imgBuf });
-        }
-
-        return pages;
-      };
-
-      // ---- Page display helpers ----
-      const makeRow = (page, total) => new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('wf_prev').setEmoji('⬅️').setStyle(ButtonStyle.Primary).setDisabled(page === 0),
-        new ButtonBuilder().setCustomId('wf_page').setLabel(`${page + 1} / ${total}`).setStyle(ButtonStyle.Secondary).setDisabled(true),
-        new ButtonBuilder().setCustomId('wf_next').setEmoji('➡️').setStyle(ButtonStyle.Primary).setDisabled(page === total - 1),
-      );
-
-      const makeOpts = (page, pages) => {
-        const { embed, imgBuf } = pages[page];
-        const components = pages.length > 1 ? [makeRow(page, pages.length)] : [];
-        return { embeds: [embed], components, ...(imgBuf && { files: [new AttachmentBuilder(imgBuf, { name: 'flightmap.png' })] }) };
-      };
-
-      // ---- Initial fetch ----
-      let flying = await fetchFlying();
-      if (!flying.length) return interaction.editReply('Nobody is currently flying.');
-
-      let pages = await buildPages(flying);
-      if (!pages.length) return interaction.editReply('Nobody is currently flying.');
-
-      let currentPage = 0;
-      let busy = false;
-
-      await interaction.editReply(makeOpts(currentPage, pages));
-
-      // ---- Pagination collector (3 min lifetime matches refresh window) ----
-      const collector = interaction.channel.createMessageComponentCollector({
-        filter: i => ['wf_prev', 'wf_next'].includes(i.customId) && i.message.interaction?.id === interaction.id,
-        time: 3 * 60 * 1000,
-      });
-      collector.on('collect', async i => {
-        if (i.customId === 'wf_prev') currentPage = Math.max(0, currentPage - 1);
-        if (i.customId === 'wf_next') currentPage = Math.min(pages.length - 1, currentPage + 1);
-        await i.update(makeOpts(currentPage, pages)).catch(() => {});
-      });
-
-      // ---- Auto-refresh every 10s for 3 minutes ----
-      const refreshTimer = setInterval(async () => {
-        if (busy) return;
-        busy = true;
-        try {
-          const newFlying = await fetchFlying();
-          if (!newFlying.length) {
-            clearInterval(refreshTimer);
-            collector.stop('nobody');
-            await interaction.editReply({ content: 'Nobody is currently flying.', embeds: [], components: [], files: [] });
-            return;
-          }
-          pages = await buildPages(newFlying);
-          currentPage = Math.min(currentPage, pages.length - 1);
-          await interaction.editReply(makeOpts(currentPage, pages));
-        } catch (_) {}
-        busy = false;
-      }, 10_000);
-
-      // Stop refreshing after 3 minutes
-      setTimeout(() => clearInterval(refreshTimer), 3 * 60 * 1000);
-
-      collector.on('end', (_, reason) => {
-        clearInterval(refreshTimer);
-        if (reason !== 'nobody') {
-          interaction.editReply({ components: [] }).catch(() => {});
-        }
-      });
-
-      break;
-    }
-
-
-
     case "list": {
       const listName = interaction.options.getString('name');
       if (!listsData.lists[listName]) {
@@ -3129,8 +2451,6 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
 });
 
 // ====== DM Handler ======
-let storyMessages = [];
-let lastAuthorId = null;
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
@@ -3231,36 +2551,6 @@ client.on("messageCreate", async (message) => {
       }
   }
 
-  // --- Story Moderator ---
-  if (message.channel.id === config.storyChannelId) {
-    const guildSettings = getGuildSettings(message.guild.id);
-    const storyLength = guildSettings.storyLength;
-
-    const storyPermissions = permissions.features.story;
-    if (!storyPermissions.enabled || (storyPermissions.restrictedUsers && storyPermissions.restrictedUsers.includes(message.author.id))) {
-      await message.delete().catch(console.error);
-      try { await message.author.send("You are not allowed to participate in the story channel."); }
-      catch (e) { console.error(`Could not DM story-restricted user ${message.author.id}:`, e); }
-      return;
-    }
-
-    if (message.author.id === lastAuthorId) {
-      await message.delete().catch(console.error);
-      try { await message.author.send("You must wait for someone else to post before adding another line to the story."); }
-      catch (e) { console.error(`Could not DM user ${message.author.id} about story turns:`, e); }
-      return;
-    }
-    storyMessages.push(message);
-    lastAuthorId = message.author.id;
-    if (storyMessages.length >= storyLength) {
-      const paragraph = storyMessages.map(m => m.content).join("\n");
-      try { await message.channel.bulkDelete(storyMessages.slice(0, 100), true); }
-      catch (e) { console.error("Error bulk deleting story messages:", e); }
-      storyMessages = [];
-      lastAuthorId = null;
-      await message.channel.send(`**Here's your story:**\n${paragraph}\n\n*Start a new story below!*`);
-    }
-  }
 });
 
 // ====== Restart Bot ======
@@ -3391,9 +2681,9 @@ function scheduleSpasticResults(client) {
 }
 
 const FEATURE_LABELS = {
-  ask: 'Ask (AI questions)', story: 'Story', spastic: 'Spastic of the Day',
+  ask: 'Ask (AI questions)', spastic: 'Spastic of the Day',
   trivia: 'Trivia', '8ball': '8 Ball', roulette: 'Roulette', geoguessr: 'GeoGuessr',
-  mood: 'Mood Analysis', gpsjam: 'GPS Jam', radar: 'Radar', random_messages: 'Random Messages',
+  mood: 'Mood Analysis', gpsjam: 'GPS Jam', radar: 'Radar',
 };
 
 const handleFeature = async (interaction) => {
@@ -3860,209 +3150,6 @@ const quickPurgeMessages = async (interaction) => {
 
 
 // ====== Volanta Flight Poller ======
-async function pollVolantaFlights(client) {
-  if (!config.volantaUsers?.length || !config.volantaChannelId) return;
-  const channel = client.guilds.cache.first()?.channels.cache.get(config.volantaChannelId);
-  if (!channel) return;
-
-  for (const user of config.volantaUsers) {
-    try {
-      const res = await axios.get(
-        `https://api.volanta.app/api/v1/Flights/user/${user.userId}?page=1&pageSize=1`,
-        { headers: { Accept: 'application/json' }, timeout: 10000 }
-      );
-      const flights = res.data;
-      if (!flights || !flights.length) continue;
-      const flight = flights[0].flight;
-      if (!flight || flight.state !== 'Completed') continue;
-      if (flight.id === lastVolantaFlightIds.get(user.userId)) continue;
-      lastVolantaFlightIds.set(user.userId, flight.id);
-      try {
-        const toSave = Object.fromEntries(lastVolantaFlightIds);
-        fs.writeFileSync(VOLANTA_LAST_FLIGHT_PATH, JSON.stringify(toSave, null, 2));
-      } catch(e) {}
-
-      const origin = flight.originIcao || '???';
-      const dest = flight.destinationIcao || '???';
-      const originName = flight.origin?.name || origin;
-      const destName = flight.destination?.name || dest;
-      const aircraft = flight.aircraftIcao || 'Unknown';
-      const aircraftTitle = flight.aircraftTitle || aircraft;
-      const airline = flight.aircraft?.airline?.name || '';
-      const callsign = flight.callsign || flight.flightNumber || 'Unknown';
-      const distNm = flight.distanceFlownInNauticalMiles ? `${Math.round(flight.distanceFlownInNauticalMiles).toLocaleString()} nm` : 'Unknown';
-      const flightTimeSec = flight.realFlightTime || flight.effectiveFlightTime || 0;
-      const hrs = Math.floor(flightTimeSec / 3600);
-      const mins = Math.floor((flightTimeSec % 3600) / 60);
-      const duration = flightTimeSec ? `${hrs}h ${mins}m` : 'Unknown';
-      const CELESTIAL_ID = 'c8dce899-5b6b-4534-3fb9-08dca7f6f6ee';
-      let rawLandingRate = flight.landingRate ? Math.round(flight.landingRate) : null;
-      if (rawLandingRate !== null && user.userId === CELESTIAL_ID) {
-        const pct = 1 + (Math.random() * 1.05 + 0.35);
-        rawLandingRate = Math.round(rawLandingRate * pct);
-      }
-      const landingRate = rawLandingRate !== null ? `${rawLandingRate} fpm` : 'Unknown';
-      let celestialComment = null;
-      if (user.userId === CELESTIAL_ID && rawLandingRate !== null) {
-        const abs = Math.abs(rawLandingRate);
-        if (abs >= 600) {
-          const opts = [
-            "I'm calling the NTSB.",
-            "Are you sure you're qualified to do this?",
-            "Runway inspection requested. And a structural survey.",
-            "Gonna need an engineering inspection after that one.",
-            "The black box is on fire. Literally.",
-            "That wasn't a landing, that was a controlled crash.",
-            "Passengers are suing. All of them.",
-            "Tower: \"Are you okay?\" Celestial: \"Define okay.\"",
-            "The runway would like to press charges.",
-            "Sir this is a Boeing not a lawn dart.",
-            "That landing was so hard it showed up on seismographs.",
-            "Gear collapse probability: high. Very high.",
-            "We're going to need a bigger repair bill.",
-            "The ground crew are reconsidering their career choices.",
-            "This flight has been flagged for a safety review.",
-          ];
-          celestialComment = opts[Math.floor(Math.random() * opts.length)];
-        } else if (abs >= 400) {
-          const opts = [
-            "Did you just attack the runway?",
-            "Gear collapse imminent. Maybe. Probably.",
-            "I've seen smoother arrivals from cargo drops.",
-            "The passengers have filed a formal complaint.",
-            "That's one way to stop a plane I suppose.",
-            "The overhead bins are now on the floor.",
-            "Firm but survivable. Barely.",
-            "The airline would like a word with you.",
-            "Several passengers have asked to deplane immediately.",
-            "Coffee? All over the ceiling now.",
-            "The co-pilot has gone quiet.",
-            "Not a greaser. Not even close.",
-            "The ground crew saw that. They're not impressed.",
-            "That's going in the report.",
-            "You've been added to the simulator training list.",
-          ];
-          celestialComment = opts[Math.floor(Math.random() * opts.length)];
-        } else if (abs >= 200) {
-          const opts = [
-            "A bit firm there mate.",
-            "The overhead bins didn't stand a chance.",
-            "The passengers would like a word.",
-            "Solid. Very solid. Too solid.",
-            "Not a bounce, more of a thud.",
-            "The cabin crew are giving you a look.",
-            "Felt that one in economy and business.",
-            "Your passengers have left a 3 star review.",
-            "Not illegal. Just uncomfortable.",
-            "The wheels are filing a complaint.",
-            "Bold landing strategy. Questionable, but bold.",
-            "A few people spilled their drinks. Just saying.",
-            "The flight attendants have seen better.",
-            "You'll want to check those tyres.",
-            "Not your finest work.",
-          ];
-          celestialComment = opts[Math.floor(Math.random() * opts.length)];
-        }
-      }
-      const fuelBurn = flight.fuelBurn ? `${Math.round(flight.fuelBurn).toLocaleString()} kg` : null;
-      const avgSpeed = (flight.distanceFlownInNauticalMiles && flightTimeSec) ? `${Math.round(flight.distanceFlownInNauticalMiles / (flightTimeSec / 3600))} kt` : null;
-      const embed = new EmbedBuilder()
-        .setTitle(`✈️ ${user.username} just landed!`)
-        .setDescription(`**${callsign}** — ${originName} (${origin}) → ${destName} (${dest})`)
-        .addFields(
-          { name: '🛫 Route', value: `${origin} → ${dest}`, inline: true },
-          { name: '🛩️ Aircraft', value: `${aircraft}${airline ? ' · ' + airline : ''}`, inline: true },
-          { name: '⏱️ Duration', value: duration, inline: true },
-          { name: '📏 Distance', value: distNm, inline: true },
-          { name: '🛬 Landing Rate', value: landingRate, inline: true },
-          ...(fuelBurn ? [{ name: '⛽ Fuel Burn', value: fuelBurn, inline: true }] : []),
-          ...(avgSpeed ? [{ name: '💨 Avg Speed', value: avgSpeed, inline: true }] : []),
-        )
-        .setColor(0x5865F2)
-        .setTimestamp()
-        .setFooter({ text: `Volanta · ${aircraftTitle}` })
-        .setURL(`https://fly.volanta.app/profile/${user.username}/flights`);
-      if (celestialComment) embed.addFields({ name: '💬 Verdict', value: `*"${celestialComment}"*` });
-      await channel.send({ embeds: [embed] });
-    } catch (e) { console.error(`Volanta poll error (${user.username}):`, e.message); }
-  }
-}
-
-// ====== Elevatex Flight Poller ======
-async function pollElevatexFlights(client) {
-  if (!config.elevatexUsers?.length || !config.volantaChannelId) return;
-  const channel = client.guilds.cache.first()?.channels.cache.get(config.volantaChannelId);
-  if (!channel) return;
-
-  let allFlights = [];
-  try {
-    const res = await axios.get('https://api.elevatex.app/live/elvtx-traffic.json', { timeout: 10000 });
-    allFlights = Array.isArray(res.data) ? res.data : [];
-  } catch (e) { console.error('Elevatex traffic fetch error:', e.message); return; }
-
-  for (const user of config.elevatexUsers) {
-    try {
-      const active = allFlights.find(f => f.userId === user.userId && !f.completed && !f.cancelled);
-      if (active) {
-        activeElevatexFlights.set(user.userId, {
-          id: active.id,
-          origin: active.origin?.icao || '???',
-          dest: active.destination?.icao || '???',
-          aircraft: active.aircraftIcao || active.aircraft?.typeCode || 'Unknown',
-          callsign: active.callsign || 'Unknown',
-        });
-      } else {
-        const tracked = activeElevatexFlights.get(user.userId);
-        if (!tracked) continue;
-        if (tracked.id === lastElevatexFlightIds.get(user.userId)) {
-          activeElevatexFlights.delete(user.userId);
-          continue;
-        }
-        activeElevatexFlights.delete(user.userId);
-        lastElevatexFlightIds.set(user.userId, tracked.id);
-        try {
-          const toSave = Object.fromEntries(lastElevatexFlightIds);
-          fs.writeFileSync(ELEVATEX_LAST_FLIGHT_PATH, JSON.stringify(toSave, null, 2));
-        } catch(e) {}
-
-        let landingRate = 'Unknown', duration = 'Unknown', distNm = null, fuelBurn = null, avgSpeed = null;
-        try {
-          const det = await axios.get(`https://api.elevatex.app/api/flight/${tracked.id}/details/public`, { timeout: 10000 });
-          const d = det.data;
-          if (d) {
-            const flightTimeSec = d.duration || d.flightTime || 0;
-            if (flightTimeSec) { const hrs = Math.floor(flightTimeSec / 3600); const mins = Math.floor((flightTimeSec % 3600) / 60); duration = `${hrs}h ${mins}m`; }
-            if (d.landingRate != null) landingRate = `${Math.round(d.landingRate)} fpm`;
-            if (d.distance)   distNm   = `${Math.round(d.distance).toLocaleString()} nm`;
-            if (d.fuelBurn)   fuelBurn = `${Math.round(d.fuelBurn).toLocaleString()} kg`;
-            if (d.distance && flightTimeSec) avgSpeed = `${Math.round(d.distance / (flightTimeSec / 3600))} kt`;
-          }
-        } catch(_) {}
-
-        const embed = new EmbedBuilder()
-          .setTitle(`✈️ ${user.username} just landed!`)
-          .setDescription(`**${tracked.callsign}** — ${tracked.origin} → ${tracked.dest}`)
-          .addFields(
-            { name: '🛫 Route', value: `${tracked.origin} → ${tracked.dest}`, inline: true },
-            { name: '🛩️ Aircraft', value: tracked.aircraft, inline: true },
-            { name: '⏱️ Duration', value: duration, inline: true },
-            ...(distNm ? [{ name: '📏 Distance', value: distNm, inline: true }] : []),
-            { name: '🛬 Landing Rate', value: landingRate, inline: true },
-            ...(fuelBurn ? [{ name: '⛽ Fuel Burn', value: fuelBurn, inline: true }] : []),
-            ...(avgSpeed ? [{ name: '💨 Avg Speed', value: avgSpeed, inline: true }] : []),
-          )
-          .setColor(0xff6600)
-          .setTimestamp()
-          .setFooter({ text: `Elevatex · ${tracked.aircraft}` });
-        await channel.send({ embeds: [embed] });
-      }
-    } catch (e) { console.error(`Elevatex poll error (${user.username}):`, e.message); }
-  }
-}
-
-// ====== Live Map ======
-
-// Web Mercator lat/lon to pixel on the cached world basemap
 function liveMapLatLonToPixel(lat, lon) {
   lat = Math.max(-85.051129, Math.min(85.051129, lat)); // clamp to Mercator-valid range
   const scale = 512 * Math.pow(2, LIVE_MAP_ZOOM); // Mapbox 512px tiles
@@ -4077,6 +3164,31 @@ function liveMapLatLonToPixel(lat, lon) {
   };
 }
 
+
+function gcPoints(a, b, n = 20) {
+  const toRad = d => d * Math.PI / 180;
+  const toDeg = r => r * 180 / Math.PI;
+  const lat1 = toRad(a.lat), lon1 = toRad(a.lon);
+  const lat2 = toRad(b.lat), lon2 = toRad(b.lon);
+  const ax = Math.cos(lat1) * Math.cos(lon1), ay = Math.cos(lat1) * Math.sin(lon1), az = Math.sin(lat1);
+  const bx = Math.cos(lat2) * Math.cos(lon2), by = Math.cos(lat2) * Math.sin(lon2), bz = Math.sin(lat2);
+  const dot = Math.min(1, Math.max(-1, ax*bx + ay*by + az*bz));
+  const theta = Math.acos(dot);
+  if (theta < 1e-6) return [a, b];
+  const sinT = Math.sin(theta);
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    const sa = Math.sin((1 - t) * theta) / sinT;
+    const sb = Math.sin(t * theta) / sinT;
+    pts.push({
+      lat: toDeg(Math.asin(Math.max(-1, Math.min(1, sa*az + sb*bz)))),
+      lon: toDeg(Math.atan2(sa*ay + sb*by, sa*ax + sb*bx)),
+    });
+  }
+  return pts;
+}
+
 // Fetch world basemap from Mapbox once; cache forever
 async function ensureWorldBasemap() {
   if (fs.existsSync(WORLD_BASEMAP_PATH)) return;
@@ -4088,6 +3200,29 @@ async function ensureWorldBasemap() {
 }
 
 // Download and cache a Discord member's avatar (circular, 28x28)
+function haversineNm(lat1, lon1, lat2, lon2) {
+  const toRad = d => d * Math.PI / 180;
+  const R = 3440.065;
+  const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+async function fetchSimbriefWaypoints(simbriefUsername, dep, dest) {
+  const cached = liveMapSimbriefCache.get(simbriefUsername);
+  if (cached && cached.dep === dep && cached.dest === dest && Date.now() - cached.cachedAt < 3600000) return cached.waypoints;
+  try {
+    const res = await axios.get(`https://www.simbrief.com/api/xml.fetcher.php?username=${encodeURIComponent(simbriefUsername)}&json=1`, { timeout: 10000 });
+    const fixes = res.data?.navlog?.fix || [];
+    const fixArr = Array.isArray(fixes) ? fixes : [fixes];
+    const waypoints = fixArr.map(f => ({
+      ident: f.ident, lat: parseFloat(f.pos_lat), lon: parseFloat(f.pos_long),
+    })).filter(w => !isNaN(w.lat) && !isNaN(w.lon));
+    liveMapSimbriefCache.set(simbriefUsername, { waypoints, dep, dest, cachedAt: Date.now() });
+    return waypoints;
+  } catch(_) { return null; }
+}
+
 async function getLiveMapAvatar(client, discordId) {
   if (liveMapAvatarCache.has(discordId)) {
     return liveMapAvatarCache.get(discordId);
@@ -4101,12 +3236,12 @@ async function getLiveMapAvatar(client, discordId) {
       if (member) break;
     }
     if (!member) { console.error("Member not found:", discordId); return null; }
-    const url = member.displayAvatarURL({ size: 64, extension: 'png', forceStatic: true });
+    const url = member.displayAvatarURL({ size: 128, extension: 'png', forceStatic: true });
     const buf = await axios.get(url, { responseType: 'arraybuffer', timeout: 10000 });
     const img = await Jimp.read(Buffer.from(buf.data));
-    img.resize({ w: 28, h: 28 });
-    img.scan(0, 0, 28, 28, (ax, ay, idx) => {
-      if ((ax - 14) * (ax - 14) + (ay - 14) * (ay - 14) > 13 * 13)
+    img.resize({ w: 56, h: 56 });
+    img.scan(0, 0, 56, 56, (ax, ay, idx) => {
+      if ((ax - 28) * (ax - 28) + (ay - 28) * (ay - 28) > 26 * 26)
         img.bitmap.data[idx + 3] = 0;
     });
     liveMapAvatarCache.set(discordId, img);
@@ -4135,241 +3270,445 @@ async function liveMapLookupAirports(...icaos) {
 // the locally-scoped fetchFlying inside /whosflying
 async function liveMapFetchPositions() {
   const entries = [];
-
-  // Merge hardcoded config users with self-registered file users
-  let lmFileUsers = [];
+  let users = [];
   try {
     if (fs.existsSync(LIVE_MAP_USERS_PATH))
-      lmFileUsers = Object.values(JSON.parse(fs.readFileSync(LIVE_MAP_USERS_PATH)));
+      users = JSON.parse(fs.readFileSync(LIVE_MAP_USERS_PATH));
   } catch(_) {}
-  const lmDedup = (arr, key) => [...new Map(arr.map(u => [u[key], u])).values()];
-  const lmVolantaUsers = lmDedup([
-    ...(config.volantaUsers || []).map(u => ({ userId: u.userId, username: u.username, discordId: u.discordId || null })),
-    ...lmFileUsers.filter(u => u.volantaId).map(u => ({ userId: u.volantaId, username: u.username, discordId: u.discordId })),
-  ], 'userId');
-  const lmVatsimUsers = lmDedup([
-    ...(config.vatsimUsers || []).map(u => ({ cid: u.cid, username: u.username, discordId: u.discordId || null })),
-    ...lmFileUsers.filter(u => u.vatsimCid).map(u => ({ cid: u.vatsimCid, username: u.username, discordId: u.discordId })),
-  ], 'cid');
-  const lmElevatexUsers = lmDedup([
-    ...(config.elevatexUsers || []).map(u => ({ userId: u.userId, username: u.username, discordId: u.discordId || null })),
-    ...lmFileUsers.filter(u => u.elevatexId).map(u => ({ userId: u.elevatexId, username: u.username, discordId: u.discordId })),
-  ], 'userId');
 
-  // Volanta
-  if (lmVolantaUsers.length) {
+  const volantaUsers  = users.filter(u => u.source === "volanta");
+  const vatsimUsers   = users.filter(u => u.source === "vatsim");
+  const elevatexUsers = users.filter(u => u.source === "elevatex");
+  const skyteamUsers  = users.filter(u => u.source === "skyteam");
+
+  if (volantaUsers.length) {
     try {
-      const res = await axios.get('https://webassets.volanta.app/volanta-flight-positions.json', { timeout: 10000 });
+      const res = await axios.get("https://webassets.volanta.app/volanta-flight-positions.json", { timeout: 10000 });
       const feed = res.data?.data || [];
-      for (const user of lmVolantaUsers) {
-        const e = feed.find(f => f.networkUserId === user.userId && f.privacyOption !== 'Private');
+      for (const user of volantaUsers) {
+        const e = feed.find(f => f.networkUserId === user.userId && f.privacyOption !== "Private");
         if (!e || !e.position) continue;
         await liveMapLookupAirports(e.originIcao, e.destinationIcao);
         entries.push({
-          source: 'Volanta', username: user.username, userId: user.userId,
-          discordId: user.discordId,
+          source: "Volanta", username: user.username, userId: user.userId,
+          discordId: user.discordId || null, simbriefUsername: user.simbriefUsername || null,
           lat: e.position.latitude, lon: e.position.longitude,
           heading: e.position.headingTrue || 0,
           altitude: e.position.altitude, speed: e.position.groundSpeed,
-          origin: e.originIcao || '???', dest: e.destinationIcao || '???',
+          origin: e.originIcao || "???", dest: e.destinationIcao || "???",
           originLat: liveMapAirportCache[e.originIcao]?.lat ?? null,
           originLon: liveMapAirportCache[e.originIcao]?.lon ?? null,
           destLat: liveMapAirportCache[e.destinationIcao]?.lat ?? null,
           destLon: liveMapAirportCache[e.destinationIcao]?.lon ?? null,
-          aircraft: e.aircraftIcao || 'Unknown', callsign: e.callsign || '-',
+          aircraft: e.aircraftIcao || "Unknown", callsign: e.callsign || "-",
         });
       }
     } catch(_) {}
   }
 
-  // VATSIM
-  if (lmVatsimUsers.length) {
+  if (vatsimUsers.length) {
     try {
-      const res = await axios.get('https://data.vatsim.net/v3/vatsim-data.json', { timeout: 15000 });
+      const res = await axios.get("https://data.vatsim.net/v3/vatsim-data.json", { timeout: 15000 });
       const pilots = res.data?.pilots || [];
-      for (const vu of lmVatsimUsers) {
+      for (const vu of vatsimUsers) {
         const p = pilots.find(pilot => String(pilot.cid) === String(vu.cid));
         if (!p) continue;
         const vOrigin = p.flight_plan?.departure, vDest = p.flight_plan?.arrival;
         await liveMapLookupAirports(vOrigin, vDest);
         entries.push({
-          source: 'vatsim', username: vu.username, userId: String(vu.cid),
-          discordId: vu.discordId || null,
+          source: "vatsim", username: vu.username, userId: String(vu.cid),
+          discordId: vu.discordId || null, simbriefUsername: vu.simbriefUsername || null,
           lat: p.latitude, lon: p.longitude, heading: p.heading || 0,
           altitude: p.altitude, speed: p.groundspeed,
-          origin: vOrigin || '???', dest: vDest || '???',
+          origin: vOrigin || "???", dest: vDest || "???",
           originLat: liveMapAirportCache[vOrigin]?.lat ?? null,
           originLon: liveMapAirportCache[vOrigin]?.lon ?? null,
           destLat: liveMapAirportCache[vDest]?.lat ?? null,
           destLon: liveMapAirportCache[vDest]?.lon ?? null,
-          aircraft: p.flight_plan?.aircraft_short || p.flight_plan?.aircraft || 'Unknown',
-          callsign: p.callsign || '-',
+          aircraft: p.flight_plan?.aircraft_short || p.flight_plan?.aircraft || "Unknown",
+          callsign: p.callsign || "-",
         });
       }
     } catch(_) {}
   }
 
-  // Elevatex (uses public traffic feed — no auth required)
-  if (lmElevatexUsers.length) {
+  if (elevatexUsers.length) {
     try {
-      const res = await axios.get('https://api.elevatex.app/live/elvtx-traffic.json', { timeout: 10000 });
+      const res = await axios.get("https://api.elevatex.app/live/elvtx-traffic.json", { timeout: 10000 });
       const flights = Array.isArray(res.data) ? res.data : [];
-      for (const user of lmElevatexUsers) {
+      for (const user of elevatexUsers) {
         const ef = flights.find(f => f.userId === user.userId && !f.completed && !f.cancelled && f.position);
         if (!ef) continue;
         const pos = ef.position;
         entries.push({
-          source: 'Elevatex', username: user.username, userId: user.userId,
-          discordId: user.discordId || null,
+          source: "Elevatex", username: user.username, userId: user.userId,
+          discordId: user.discordId || null, simbriefUsername: user.simbriefUsername || null,
           lat: pos.latitude, lon: pos.longitude, heading: pos.heading || 0,
           altitude: pos.altitude, speed: pos.groundSpeed,
-          origin: ef.origin?.icao || '???', dest: ef.destination?.icao || '???',
+          origin: ef.origin?.icao || "???", dest: ef.destination?.icao || "???",
           originLat: ef.origin?.latitude ?? null, originLon: ef.origin?.longitude ?? null,
           destLat: ef.destination?.latitude ?? null, destLon: ef.destination?.longitude ?? null,
-          aircraft: ef.aircraftIcao || ef.aircraft?.typeCode || 'Unknown',
-          callsign: ef.callsign || '-',
+          aircraft: ef.aircraftIcao || ef.aircraft?.typeCode || "Unknown",
+          callsign: ef.callsign || "-",
         });
       }
     } catch(_) {}
   }
 
+
+  if (skyteamUsers.length) {
+    try {
+      const stFlights = await new Promise((resolve) => {
+        let buf = '', done = false;
+        const finish = (val) => { if (done) return; done = true; try { req.destroy(); } catch(_) {} clearTimeout(timer); resolve(val); };
+        const timer = setTimeout(() => finish([]), 8000);
+        const req = require('https').get('https://acars.skyteamvirtual.org/es/v1/live_flights?tenant=skyteamvirtual', (res) => {
+          res.on('data', chunk => {
+            buf += chunk.toString();
+            const parts = buf.split('\n\n');
+            for (const evt of parts.slice(0, -1)) {
+              if (!evt.includes('event: flight_data')) continue;
+              const dm = evt.match(/^data:\s*(.+)$/m);
+              if (dm) { try { finish(JSON.parse(dm[1])); } catch(_) { finish([]); } return; }
+            }
+          });
+          res.on('end', () => finish([]));
+          res.on('error', () => finish([]));
+        });
+        req.on('error', () => finish([]));
+      });
+      for (const user of skyteamUsers) {
+        const sf = Array.isArray(stFlights) ? stFlights.find(f => f.pilot_public_id === user.userId && f.status !== 'arrived') : null;
+        if (!sf) continue;
+        entries.push({
+          source: 'SkyTeam', username: user.username, userId: user.userId,
+          discordId: user.discordId || null, simbriefUsername: user.simbriefUsername || null,
+          lat: sf.latitude, lon: sf.longitude, heading: sf.compass_heading || 0,
+          altitude: sf.altitude, speed: sf.ground_speed,
+          origin: sf.departure_icao || '???', dest: sf.arrival_icao || '???',
+          originLat: sf.departure_latitude ?? null, originLon: sf.departure_longitude ?? null,
+          destLat: sf.arrival_latitude ?? null, destLon: sf.arrival_longitude ?? null,
+          aircraft: sf.aircraft_type_icao || 'Unknown',
+          callsign: sf.route_formatted_flight_number || '-',
+        });
+      }
+    } catch(e) { console.error('[liveMap] skyteam error:', e.message); }
+  }
+  await Promise.all(entries.map(async e => {
+    if (e.simbriefUsername && e.origin && e.dest && e.origin !== "???" && e.dest !== "???") {
+      e.waypoints = await fetchSimbriefWaypoints(e.simbriefUsername, e.origin, e.dest);
+    }
+  }));
+
   return entries;
 }
 
-// Composite avatar dots / colored dots onto world basemap
+
+async function getVatspyBoundaries() {
+  if (vatspyBoundariesCache && Date.now() - vatspyBoundariesFetchedAt < 24 * 3600 * 1000) return vatspyBoundariesCache;
+  try {
+    const res = await axios.get('https://raw.githubusercontent.com/vatsimnetwork/vatspy-data-project/master/Boundaries.geojson', { timeout: 30000 });
+    vatspyBoundariesCache = res.data;
+    vatspyBoundariesFetchedAt = Date.now();
+    console.log('[liveMap] vatspy boundaries loaded,', (res.data.features || []).length, 'features');
+  } catch(e) { console.error('[liveMap] vatspy boundaries error:', e.message); }
+  return vatspyBoundariesCache;
+}
+
+async function getVatspyAirports() {
+  if (vatspyAirportsCache && Date.now() - vatspyAirportsCachedAt < 24 * 3600 * 1000) return vatspyAirportsCache;
+  try {
+    const res = await axios.get('https://raw.githubusercontent.com/vatsimnetwork/vatspy-data-project/master/VATSpy.dat', { timeout: 30000 });
+    const airports = {};
+    let inAirports = false;
+    for (const line of res.data.split('\n')) {
+      const t = line.trim().replace(/\r$/, '');
+      if (t === '[Airports]') { inAirports = true; continue; }
+      if (t.startsWith('[') && inAirports) break;
+      if (!inAirports || t.startsWith(';') || !t) continue;
+      const p = t.split('|');
+      if (p.length >= 4 && p[0]) airports[p[0].trim()] = { lat: parseFloat(p[2]), lon: parseFloat(p[3]) };
+    }
+    vatspyAirportsCache = airports;
+    vatspyAirportsCachedAt = Date.now();
+    console.log('[liveMap] vatspy airports loaded,', Object.keys(airports).length, 'airports');
+  } catch(e) { console.error('[liveMap] vatspy airports error:', e.message); }
+  return vatspyAirportsCache || {};
+}
+
+async function getVatsimControllers() {
+  if (Date.now() - vatsimControllersCachedAt < 60000) return vatsimControllersCache;
+  try {
+    const res = await axios.get('https://data.vatsim.net/v3/vatsim-data.json', { timeout: 15000 });
+    vatsimControllersCache = res.data?.controllers || [];
+    vatsimControllersCachedAt = Date.now();
+  } catch(e) { console.error('[liveMap] vatsim controllers error:', e.message); }
+  return vatsimControllersCache;
+}
+
+const SECTOR_PALETTE = [
+  '#4fc3f7','#66bb6a','#ffa726','#ce93d8','#ef5350','#26c6da',
+  '#d4e157','#ff7043','#5c6bc0','#26a69a','#ec407a','#8d6e63',
+];
+function firColor(firId) {
+  let h = 0;
+  for (let i = 0; i < firId.length; i++) h = (h * 31 + firId.charCodeAt(i)) & 0xffff;
+  return SECTOR_PALETTE[h % SECTOR_PALETTE.length];
+}
+
 async function buildLiveMapImage(client, entries) {
+  const { createCanvas, loadImage } = require('canvas');
+  const { JimpMime } = require('jimp');
   await ensureWorldBasemap();
-  const base = await Jimp.read(WORLD_BASEMAP_PATH);
 
-  if (!liveMapFont) {
-    try {
-      const { loadFont } = require("jimp");
-      const path = require("path");
-      const fontPath = path.join(__dirname, "node_modules/@jimp/plugin-print/fonts/open-sans/open-sans-8-white/open-sans-8-white.fnt");
-      liveMapFont = await loadFont(fontPath);
-    } catch(_) {}
-  }
+  const [controllers, boundaries, vatspyAps] = await Promise.all([
+    getVatsimControllers().catch(() => []),
+    getVatspyBoundaries().catch(() => null),
+    getVatspyAirports().catch(() => ({})),
+  ]);
 
-  const COLORS = { Volanta: [0x4f, 0xc3, 0xf7], Vatsim: [0x66, 0xbb, 0x6a], Elevatex: [0xff, 0x66, 0x00] };
-
-  // --- Step 1: compute crop region from pilots + origins + dests ---
+  // ── Compute crop region from active pilot positions ──
   const validPx = [];
   for (const e of entries) {
     if (e.lat != null && e.lon != null) validPx.push(liveMapLatLonToPixel(e.lat, e.lon));
-    if (e.originLat != null && e.originLon != null) validPx.push(liveMapLatLonToPixel(e.originLat, e.originLon));
-    if (e.destLat != null && e.destLon != null) validPx.push(liveMapLatLonToPixel(e.destLat, e.destLon));
+    if (e.isActive) {
+      if (e.originLat != null && e.originLon != null) validPx.push(liveMapLatLonToPixel(e.originLat, e.originLon));
+      if (e.destLat != null && e.destLon != null) validPx.push(liveMapLatLonToPixel(e.destLat, e.destLon));
+    }
   }
-
   let cropX = 0, cropY = 0, cropW = LIVE_MAP_W, cropH = LIVE_MAP_H;
-
   if (validPx.length > 0) {
-    const xs = validPx.map(p => p.x);
-    const ys = validPx.map(p => p.y);
+    const xs = validPx.map(p => p.x), ys = validPx.map(p => p.y);
     const minX = Math.min(...xs), maxX = Math.max(...xs);
     const minY = Math.min(...ys), maxY = Math.max(...ys);
-    const spanX = maxX - minX;
-    const spanY = maxY - minY;
+    const spanX = maxX - minX, spanY = maxY - minY;
     const rel = Math.max(spanX / LIVE_MAP_W, spanY / LIVE_MAP_H);
+    let padX, padY;
+    if (rel > 0.55)      { padX = Math.max(5, Math.round(spanX * 0.01));  padY = Math.max(5, Math.round(spanY * 0.01)); }
+    else if (rel > 0.15) { padX = Math.max(15, Math.round(spanX * 0.04)); padY = Math.max(15, Math.round(spanY * 0.04)); }
+    else                 { padX = Math.max(25, Math.round(spanX * 0.08)); padY = Math.max(25, Math.round(spanY * 0.08)); }
+    const cx = Math.round((minX + maxX) / 2), cy = Math.round((minY + maxY) / 2);
+    let halfW = Math.round(spanX / 2) + padX, halfH = Math.round(spanY / 2) + padY;
+    const ar = LIVE_MAP_W / LIVE_MAP_H;
+    if (halfW / halfH < ar) halfW = Math.round(halfH * ar); else halfH = Math.round(halfW / ar);
+    const cX = Math.max(0, cx - halfW), cY = Math.max(0, cy - halfH);
+    const cW = Math.min(LIVE_MAP_W - cX, (cx + halfW) - cX);
+    const cH = Math.min(LIVE_MAP_H - cY, (cy + halfH) - cY);
+    if (cW > 50 && cH > 50) { cropX = cX; cropY = cY; cropW = cW; cropH = cH; }
+  }
 
-    let padX = null, padY = null;
-    if (rel <= 0.55) {
-      if (rel > 0.15) {
-        padX = Math.max(100, Math.round(spanX * 0.5));
-        padY = Math.max(100, Math.round(spanY * 0.5));
-      } else {
-        padX = Math.max(100, Math.round(spanX * 0.9));
-        padY = Math.max(100, Math.round(spanY * 0.9));
-      }
+  const scaleX = LIVE_MAP_W / cropW, scaleY = LIVE_MAP_H / cropH;
+
+  // Unclamped Mercator → canvas coords (used for polygon vertices)
+  const LMSCALE = 512 * Math.pow(2, LIVE_MAP_ZOOM);
+  const merc = l => LMSCALE / (2 * Math.PI) * Math.log(Math.tan(Math.PI / 4 + l * Math.PI / 360));
+  const MERC_CY = merc(LIVE_MAP_CY);
+  const remapLatLon = (lat, lon) => {
+    lat = Math.max(-85.051129, Math.min(85.051129, lat));
+    const wx = LIVE_MAP_W / 2 + (lon - LIVE_MAP_CX) * LMSCALE / 360;
+    const wy = LIVE_MAP_H / 2 - (merc(lat) - MERC_CY);
+    return { x: (wx - cropX) * scaleX, y: (wy - cropY) * scaleY };
+  };
+
+  // Clamped remap for pilot/badge positions (uses liveMapLatLonToPixel output)
+  const remap   = (wx, wy) => ({ x: (wx - cropX) * scaleX,     y: (wy - cropY) * scaleY });
+  const remap2x = (wx, wy) => ({ x: (wx - cropX) * scaleX * 2, y: (wy - cropY) * scaleY * 2 });
+
+  // ── Main canvas ──
+  const canvas = createCanvas(LIVE_MAP_W, LIVE_MAP_H);
+  const ctx = canvas.getContext('2d');
+
+  // Draw basemap (crop + zoom via drawImage transform)
+  const basemapImg = await loadImage(WORLD_BASEMAP_PATH);
+  ctx.drawImage(basemapImg, -cropX * scaleX, -cropY * scaleY, LIVE_MAP_W * scaleX, LIVE_MAP_H * scaleY);
+
+  // ── FIR sector polygons for active CTR (6) / FSS (1) controllers ──
+  if (boundaries) {
+    const activeFirs = new Set();
+    for (const c of controllers) {
+      if (c.facility === 6 || c.facility === 1) activeFirs.add(c.callsign.split('_')[0]);
     }
 
-    if (padX !== null) {
-      const cx = Math.round((minX + maxX) / 2);
-      const cy = Math.round((minY + maxY) / 2);
-      let halfW = Math.round(spanX / 2) + padX;
-      let halfH = Math.round(spanY / 2) + padY;
-      const ar = LIVE_MAP_W / LIVE_MAP_H;
-      if (halfW / halfH < ar) halfW = Math.round(halfH * ar);
-      else halfH = Math.round(halfW / ar);
-      const cX = Math.max(0, cx - halfW);
-      const cY = Math.max(0, cy - halfH);
-      const cW = Math.min(LIVE_MAP_W - cX, (cx + halfW) - cX);
-      const cH = Math.min(LIVE_MAP_H - cY, (cy + halfH) - cY);
-      if (cW > 50 && cH > 50) {
-        cropX = cX; cropY = cY; cropW = cW; cropH = cH;
-        base.crop({ x: cropX, y: cropY, w: cropW, h: cropH });
-        base.resize({ w: LIVE_MAP_W, h: LIVE_MAP_H });
+    const drawRing = (ring) => {
+      for (let i = 1; i < ring.length; i++) {
+        if (Math.abs(ring[i][0] - ring[i - 1][0]) > 180) return false; // skip antimeridian-crossing rings
+      }
+      ctx.beginPath();
+      for (let i = 0; i < ring.length; i++) {
+        const { x, y } = remapLatLon(ring[i][1], ring[i][0]); // GeoJSON coords are [lon, lat]
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      return true;
+    };
+
+    for (const feature of (boundaries.features || [])) {
+      const fid = feature.properties?.id;
+      if (!fid || !activeFirs.has(fid)) continue;
+      const color = firColor(fid);
+      const geom  = feature.geometry;
+      const rings  = geom.type === 'Polygon'      ? geom.coordinates
+                   : geom.type === 'MultiPolygon' ? geom.coordinates.flat(1)
+                   : [];
+      ctx.fillStyle   = color + '38'; // ~22% alpha fill
+      ctx.strokeStyle = color + 'BB'; // ~73% alpha border
+      ctx.lineWidth   = 1;
+      for (const ring of rings) {
+        if (drawRing(ring)) { ctx.fill(); ctx.stroke(); }
+      }
+
+      // FIR label at label_lon/label_lat or ring centroid
+      const labelLon = feature.properties?.label_lon;
+      const labelLat = feature.properties?.label_lat;
+      let lx, ly;
+      if (labelLon != null && labelLat != null) {
+        ({ x: lx, y: ly } = remapLatLon(labelLat, labelLon));
+      } else if (rings.length && rings[0].length) {
+        let slat = 0, slon = 0;
+        for (const [lo, la] of rings[0]) { slon += lo; slat += la; }
+        ({ x: lx, y: ly } = remapLatLon(slat / rings[0].length, slon / rings[0].length));
+      }
+      if (lx != null && lx >= 0 && lx <= LIVE_MAP_W && ly >= 0 && ly <= LIVE_MAP_H) {
+        ctx.font = 'bold 10px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = 'rgba(255,255,255,0.80)';
+        ctx.fillText(fid, lx, ly);
       }
     }
   }
 
-  // Remap world-pixel coords into cropped+resized space
-  const remap = (wx, wy) => ({
-    x: Math.round((wx - cropX) / cropW * LIVE_MAP_W),
-    y: Math.round((wy - cropY) / cropH * LIVE_MAP_H),
-  });
+  // ── Airport ATC badges: DEL / GND / TWR / APP ──
+  if (controllers.length) {
+    const FACILITY_LABEL = { 2: 'D', 3: 'G', 4: 'T', 5: 'A' };
+    const FACILITY_COLOR = { 2: '#AB47BC', 3: '#66BB6A', 4: '#EF5350', 5: '#FFA726' };
+    const airportAtc = {};
+    for (const c of controllers) {
+      if (![2, 3, 4, 5].includes(c.facility)) continue;
+      const icao = c.callsign.split('_')[0];
+      if (!airportAtc[icao]) airportAtc[icao] = {};
+      airportAtc[icao][c.facility] = true;
+    }
 
-  // --- Step 2: draw overlays onto the already-cropped basemap ---
+    // Merge vatspy airport coords into live map cache
+    for (const [icao, ap] of Object.entries(vatspyAps)) {
+      if (!liveMapAirportCache[icao]) liveMapAirportCache[icao] = ap;
+    }
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const [icao, facs] of Object.entries(airportAtc)) {
+      const ap = liveMapAirportCache[icao];
+      if (!ap) continue;
+      const { x, y } = remapLatLon(ap.lat, ap.lon);
+      if (x < 0 || x > LIVE_MAP_W || y < 0 || y > LIVE_MAP_H) continue;
+
+      // ICAO label background
+      ctx.font = 'bold 7px sans-serif';
+      const tw = ctx.measureText(icao).width;
+      ctx.fillStyle = 'rgba(0,0,0,0.65)';
+      ctx.fillRect(Math.round(x - tw / 2 - 2), Math.round(y - 18), Math.round(tw + 4), 10);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(icao, x, y - 13);
+
+      // Facility badges left-to-right: D G T A
+      const order  = [2, 3, 4, 5];
+      const active = order.filter(f => facs[f]);
+      const bw = 9, bh = 9, gap = 1;
+      let bx = x - (active.length * (bw + gap) - gap) / 2;
+      for (const fac of active) {
+        ctx.fillStyle = FACILITY_COLOR[fac];
+        ctx.fillRect(Math.round(bx), Math.round(y - 5), bw, bh);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 6px sans-serif';
+        ctx.fillText(FACILITY_LABEL[fac], bx + bw / 2, y - 5 + bh / 2);
+        bx += bw + gap;
+      }
+    }
+  }
+
+  // ── Routes and pilot markers at 2x (supersampled for smooth anti-aliasing) ──
+  const COLORS = { Volanta: [0x4f, 0xc3, 0xf7], Vatsim: [0x66, 0xbb, 0x6a], Elevatex: [0xff, 0x66, 0x00] };
+  const ssCanvas = createCanvas(LIVE_MAP_W * 2, LIVE_MAP_H * 2);
+  const ssCtx    = ssCanvas.getContext('2d');
+
+  for (const e of entries) {
+    if (e.lat == null || e.lon == null) continue;
+    const [cr, cg, cb] = e.isActive ? (e.userColor || COLORS[e.source] || [0xff, 0xff, 0xff]) : [0x88, 0x88, 0x88];
+    const hexColor = `rgb(${cr},${cg},${cb})`;
+
+    if (e.isActive && e.originLat != null && e.destLat != null) {
+      const routePts = (e.waypoints && e.waypoints.length > 1)
+        ? e.waypoints
+        : gcPoints({ lat: e.originLat, lon: e.originLon }, { lat: e.destLat, lon: e.destLon });
+
+      ssCtx.beginPath();
+      ssCtx.strokeStyle = hexColor;
+      ssCtx.globalAlpha = 0.5;
+      ssCtx.lineWidth = 2;
+      for (let gi = 0; gi < routePts.length; gi++) {
+        const ppx = liveMapLatLonToPixel(routePts[gi].lat, routePts[gi].lon);
+        const { x, y } = remap2x(ppx.x, ppx.y);
+        gi === 0 ? ssCtx.moveTo(x, y) : ssCtx.lineTo(x, y);
+      }
+      ssCtx.stroke();
+      ssCtx.globalAlpha = 1;
+
+      if (e.waypoints && e.waypoints.length > 1) {
+        ssCtx.fillStyle = 'rgba(255,255,255,0.6)';
+        for (const wpt of e.waypoints) {
+          const wpx = liveMapLatLonToPixel(wpt.lat, wpt.lon);
+          const { x, y } = remap2x(wpx.x, wpx.y);
+          ssCtx.beginPath(); ssCtx.arc(x, y, 4, 0, Math.PI * 2); ssCtx.fill();
+        }
+      }
+
+      ssCtx.fillStyle = 'rgba(255,255,255,0.87)';
+      for (const [dlat, dlon] of [[e.originLat, e.originLon], [e.destLat, e.destLon]]) {
+        const epx = liveMapLatLonToPixel(dlat, dlon);
+        const { x, y } = remap2x(epx.x, epx.y);
+        ssCtx.beginPath(); ssCtx.arc(x, y, 6, 0, Math.PI * 2); ssCtx.fill();
+      }
+    }
+
+    // Pilot: avatar with colored ring, or colored dot
+    const pilotPx = liveMapLatLonToPixel(e.lat, e.lon);
+    const { x: px2, y: py2 } = remap2x(pilotPx.x, pilotPx.y);
+    const avatar = e.discordId ? await getLiveMapAvatar(client, e.discordId) : null;
+    if (avatar) {
+      const avBuf = await avatar.clone().getBuffer(JimpMime.png);
+      const avImg = await loadImage(avBuf);
+      ssCtx.beginPath();
+      ssCtx.arc(px2, py2, 29, 0, Math.PI * 2);
+      ssCtx.strokeStyle = hexColor;
+      ssCtx.lineWidth = 5;
+      ssCtx.stroke();
+      ssCtx.drawImage(avImg, px2 - 28, py2 - 28, 56, 56);
+    } else {
+      ssCtx.fillStyle = hexColor;
+      ssCtx.beginPath();
+      ssCtx.arc(px2, py2, 10, 0, Math.PI * 2);
+      ssCtx.fill();
+    }
+  }
+
+  // Merge 2x layer onto main canvas (downscale anti-aliases routes + dots)
+  ctx.drawImage(ssCanvas, 0, 0, LIVE_MAP_W, LIVE_MAP_H);
+
+  // ── Username labels at 1x ──
+  ctx.font = '8px sans-serif';
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
   for (const e of entries) {
     if (e.lat == null || e.lon == null) continue;
     const wp = liveMapLatLonToPixel(e.lat, e.lon);
     const { x, y } = remap(wp.x, wp.y);
     if (x < 16 || x >= LIVE_MAP_W - 16 || y < 16 || y >= LIVE_MAP_H - 16) continue;
-
-    const [cr, cg, cb] = e.isActive ? (COLORS[e.source] || [0xff, 0xff, 0xff]) : [0x88, 0x88, 0x88];
-
-    // Route line (Bresenham)
-    if (e.isActive && e.originLat != null && e.destLat != null) {
-      const owp = liveMapLatLonToPixel(e.originLat, e.originLon);
-      const dwp = liveMapLatLonToPixel(e.destLat, e.destLon);
-      const op = remap(owp.x, owp.y);
-      const dp = remap(dwp.x, dwp.y);
-      let rx = op.x, ry = op.y;
-      const rdx = Math.abs(dp.x - rx), rdy = Math.abs(dp.y - ry);
-      const rsx = rx < dp.x ? 1 : -1, rsy = ry < dp.y ? 1 : -1;
-      let re = rdx - rdy;
-      while (true) {
-        if (rx >= 0 && rx < LIVE_MAP_W && ry >= 0 && ry < LIVE_MAP_H) {
-          const li = base.getPixelIndex(rx, ry);
-          base.bitmap.data[li] = cr; base.bitmap.data[li + 1] = cg;
-          base.bitmap.data[li + 2] = cb; base.bitmap.data[li + 3] = 0x66;
-        }
-        if (rx === dp.x && ry === dp.y) break;
-        const re2 = 2 * re;
-        if (re2 > -rdy) { re -= rdy; rx += rsx; }
-        if (re2 < rdx)  { re += rdx; ry += rsy; }
-      }
-    }
-
-    // Avatar or colored dot
-    const avatar = (Jimp && e.discordId) ? await getLiveMapAvatar(client, e.discordId) : null;
-    if (avatar) {
-      const av = avatar.clone();
-      av.scan(0, 0, 28, 28, (ax, ay, idx) => {
-        const d = Math.sqrt((ax - 14) * (ax - 14) + (ay - 14) * (ay - 14));
-        if (d >= 12 && d <= 14) {
-          av.bitmap.data[idx] = cr; av.bitmap.data[idx + 1] = cg;
-          av.bitmap.data[idx + 2] = cb; av.bitmap.data[idx + 3] = 0xff;
-        }
-      });
-      base.composite(av, x - 14, y - 14);
-    } else {
-      const R = 5;
-      for (let py = Math.max(0, y - R); py <= Math.min(LIVE_MAP_H - 1, y + R); py++) {
-        for (let px = Math.max(0, x - R); px <= Math.min(LIVE_MAP_W - 1, x + R); px++) {
-          if ((px - x) * (px - x) + (py - y) * (py - y) <= R * R) {
-            const idx = base.getPixelIndex(px, py);
-            base.bitmap.data[idx] = cr; base.bitmap.data[idx + 1] = cg;
-            base.bitmap.data[idx + 2] = cb; base.bitmap.data[idx + 3] = 0xff;
-          }
-        }
-      }
-    }
-
-    if (liveMapFont) base.print({ font: liveMapFont, x: x + 9, y: y - 4, text: e.username });
+    ctx.fillText(e.username, x + 16, y - 4);
   }
 
-  const { JimpMime } = require("jimp");
-  return await base.getBuffer(JimpMime.png);
+  return canvas.toBuffer('image/png');
 }
 
 async function updateLiveMap(client) {
@@ -4395,30 +3734,31 @@ async function updateLiveMap(client) {
       if (_seenDids.has(e.discordId)) return false;
       _seenDids.add(e.discordId); return true;
     });
+    const USER_PALETTE = [
+      [0x4f, 0xc3, 0xf7], [0xff, 0x70, 0x43], [0x66, 0xbb, 0x6a], [0xce, 0x93, 0xd8],
+      [0xff, 0xca, 0x28], [0xef, 0x53, 0x50], [0x26, 0xc6, 0xda], [0xd4, 0xe1, 0x57],
+    ];
+    dedupedKnown.forEach((e, i) => { e.userColor = USER_PALETTE[i % USER_PALETTE.length]; });
 
-    const imgBuf = Jimp
-      ? await buildLiveMapImage(client, dedupedKnown).catch(e => { console.error('buildLiveMapImage error:', e.message); return null; })
-      : null;
+    const imgBuf = await buildLiveMapImage(client, dedupedKnown).catch(e => { console.error('buildLiveMapImage error:', e.message); return null; });
 
     // One button per pilot (max 25 across 5 rows)
     const buttons = dedupedKnown.slice(0, 25).map(e =>
       new ButtonBuilder()
         .setCustomId(`lm_${e.source}_${e.userId}`)
         .setLabel(e.username)
-        .setEmoji(e.isActive ? '✈️' : '📍')
-        .setStyle(ButtonStyle.Secondary)
+        .setStyle(e.isActive ? ButtonStyle.Primary : ButtonStyle.Secondary)
     );
     const rows = [];
     for (let i = 0; i < buttons.length; i += 5)
       rows.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 5)));
-
     const sources = [...new Set(entries.map(e => e.source))];
     const embed = new EmbedBuilder()
       .setTitle('✈️ Live Flight Tracker')
-      .setDescription(entries.length
-        ? `**${entries.length}** pilot${entries.length !== 1 ? 's' : ''} airborne — ${sources.join(', ')}`
+      .setDescription(dedupedKnown.filter(e => e.isActive).length
+        ? `**${dedupedKnown.filter(e => e.isActive).length}** pilot${dedupedKnown.filter(e => e.isActive).length !== 1 ? 's' : ''} airborne — ${sources.join(', ')}`
         : allKnown.length ? 'No active flights — showing last known positions.' : 'No position data yet.')
-      .setColor(entries.length ? 0xff6600 : 0x444444)
+      .setColor(dedupedKnown.filter(e => e.isActive).length ? 0xff6600 : 0x444444)
       .setFooter({ text: 'Updates every 2 min • Last updated' })
       .setTimestamp();
 
@@ -4446,66 +3786,171 @@ async function updateLiveMap(client) {
 }
 
 
-// Live map zoom buttons — detail embed (no Mapbox, preserves API budget)
+// Live map pilot detail -- ephemeral reply on button press
 client.on('interactionCreate', async interaction => {
   if (!interaction.isButton() || !interaction.customId.startsWith('lm_')) return;
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: 64 }); // 64 = ephemeral
   try {
-    const parts   = interaction.customId.split('_'); // ['lm', source, ...userId]
-    const source  = parts[1];
-    const userId  = parts.slice(2).join('_');
+    const parts  = interaction.customId.split('_');
+    const source = parts[1];
+    const userId = parts.slice(2).join('_');
     const entries = await liveMapFetchPositions();
     const e = entries.find(en => en.source === source && en.userId === userId);
+
+    const SOURCE_COLORS = { Volanta: 0x4fc3f7, Vatsim: 0x66bb6a, Elevatex: 0xff6600 };
+
     if (!e) {
       const lastPos = liveMapLastPositions.get(userId);
-      if (!lastPos) { await interaction.editReply({ content: '📍 No position data for this pilot.' }); return; }
-      const altFt  = lastPos.altitude != null ? `${Math.round(lastPos.altitude).toLocaleString()} ft` : 'N/A';
-      const spdKt  = lastPos.speed    != null ? `${Math.round(lastPos.speed)} kt` : 'N/A';
-      const hdg    = lastPos.heading  != null ? `${Math.round(lastPos.heading)}°` : 'N/A';
-      const seenMs = Date.now() - (lastPos.lastSeen || 0);
+      if (!lastPos) { await interaction.editReply({ content: 'No position data for this pilot.' }); return; }
+      const altFt   = lastPos.altitude != null ? `${Math.round(lastPos.altitude).toLocaleString()} ft` : 'N/A';
+      const spdKt   = lastPos.speed    != null ? `${Math.round(lastPos.speed)} kt` : 'N/A';
+      const hdg     = lastPos.heading  != null ? `${Math.round(lastPos.heading)}` + String.fromCharCode(176) : 'N/A';
+      const seenMs  = Date.now() - (lastPos.lastSeen || 0);
       const seenStr = seenMs < 3600000
         ? `${Math.floor(seenMs / 60000)}m ago`
         : `${Math.floor(seenMs / 3600000)}h ${Math.floor((seenMs % 3600000) / 60000)}m ago`;
       const offEmbed = new EmbedBuilder()
-        .setTitle(`📍 ${lastPos.username} — last seen`)
-        .setDescription(`${lastPos.origin} → ${lastPos.dest} • ${seenStr}`)
+        .setTitle(`${lastPos.username} -- last seen`)
+        .setDescription(`${lastPos.origin || '?'} -> ${lastPos.dest || '?'} - ${seenStr}`)
         .addFields(
-          { name: '✈️ Aircraft', value: lastPos.aircraft, inline: true },
-          { name: '📟 Callsign',   value: lastPos.callsign, inline: true },
-          { name: '🏔️ Altitude', value: altFt, inline: true },
-          { name: '💨 Speed',      value: spdKt,     inline: true },
-          { name: '🧭 Heading',    value: hdg,        inline: true },
+          { name: 'Aircraft', value: lastPos.aircraft || 'Unknown', inline: true },
+          { name: 'Callsign', value: lastPos.callsign || '-',       inline: true },
+          { name: 'Altitude', value: altFt,                          inline: true },
+          { name: 'Speed',    value: spdKt,                          inline: true },
+          { name: 'Heading',  value: hdg,                            inline: true },
         )
         .setColor(0x555555)
         .setFooter({ text: `Last seen on ${lastPos.source}` })
         .setTimestamp(lastPos.lastSeen ? new Date(lastPos.lastSeen) : undefined);
-      const offMapBuf = await buildPilotLocalMap(client, { ...lastPos, isActive: false });
-      const offFiles = offMapBuf ? [{ attachment: offMapBuf, name: "pilot_map.png" }] : [];
-      await interaction.editReply({ embeds: [offEmbed], files: offFiles });
+      await interaction.editReply({ embeds: [offEmbed] });
       return;
     }
-    const SOURCE_COLORS = { Volanta: 0x4fc3f7, Vatsim: 0x66bb6a, Elevatex: 0xff6600 };
-    const altFt  = e.altitude != null ? `${Math.round(e.altitude).toLocaleString()} ft` : 'N/A';
-    const spdKt  = e.speed    != null ? `${Math.round(e.speed)} kt` : 'N/A';
-    const hdg    = e.heading  != null ? `${Math.round(e.heading)}\xb0` : 'N/A';
+
+    const altFt = e.altitude != null ? `${Math.round(e.altitude).toLocaleString()} ft` : 'N/A';
+    const spdKt = e.speed    != null ? `${Math.round(e.speed)} kt` : 'N/A';
+    const hdg   = e.heading  != null ? `${Math.round(e.heading)}` + String.fromCharCode(176) : 'N/A';
+
+    // Remaining flight time / progress
+    let progressStr = null, etaStr = null, distStr = null;
+    if (e.lat != null && e.lon != null && e.destLat != null && e.destLon != null && e.speed > 10) {
+      const remNm = haversineNm(e.lat, e.lon, e.destLat, e.destLon);
+      distStr = `${Math.round(remNm)} nm`;
+      const remHrs = remNm / e.speed;
+      const remH = Math.floor(remHrs), remM = Math.round((remHrs - remH) * 60);
+      etaStr = `~${remH}h ${remM}m`;
+      if (e.originLat != null && e.originLon != null) {
+        const totalNm = haversineNm(e.originLat, e.originLon, e.destLat, e.destLon);
+        if (totalNm > 0) progressStr = `${Math.round((1 - remNm / totalNm) * 100)}%`;
+      }
+    }
+
+    const fields = [
+      { name: 'Aircraft', value: e.aircraft || 'Unknown', inline: true },
+      { name: 'Callsign', value: e.callsign || '-',       inline: true },
+      { name: 'Altitude', value: altFt,                    inline: true },
+      { name: 'Speed',    value: spdKt,                    inline: true },
+      { name: 'Heading',  value: hdg,                      inline: true },
+    ];
+    if (progressStr) fields.push({ name: 'Progress',   value: progressStr, inline: true });
+    if (distStr)     fields.push({ name: 'Dist Rem.',  value: distStr,     inline: true });
+    if (etaStr)      fields.push({ name: 'ETA',        value: etaStr,      inline: true });
+
     const embed = new EmbedBuilder()
-      .setTitle(`\u2708\ufe0f ${e.username} — ${e.origin} \u2192 ${e.dest}`)
-      .addFields(
-        { name: '\u2708\ufe0f Aircraft', value: e.aircraft, inline: true },
-        { name: '\📟 Callsign',   value: e.callsign, inline: true },
-        { name: '🏔️ Altitude', value: altFt, inline: true },
-        { name: '\💨 Speed',      value: spdKt,     inline: true },
-        { name: '\🧭 Heading',    value: hdg,       inline: true },
-      )
+      .setTitle(`${e.username} — ${e.origin || '?'} → ${e.dest || '?'}`)
+      .addFields(...fields)
       .setColor(SOURCE_COLORS[e.source] || 0xffffff)
       .setFooter({ text: `Source: ${e.source}` })
       .setTimestamp();
     await interaction.editReply({ embeds: [embed] });
-  } catch(err) {
+  } catch (err) {
     console.error('Live map button error:', err.message);
-    await interaction.editReply({ content: 'Failed to fetch flight details.' });
+    try { await interaction.editReply({ content: 'Failed to fetch flight details.' }); } catch(_) {}
   }
 });
+
+// ====== Volanta Landing Announcer ======
+async function pollVolantaFlights(client) {
+  const LANDING_CHANNEL_ID = '1412039978057470042';
+  const CELESTIAL_ID = 'c8dce899-5b6b-4534-3fb9-08dca7f6f6ee';
+  let users = [];
+  try { users = JSON.parse(fs.readFileSync(LIVE_MAP_USERS_PATH)).filter(u => u.source === 'volanta'); } catch(e) { return; }
+  if (!users.length) return;
+  const channel = client.channels.cache.get(LANDING_CHANNEL_ID);
+  if (!channel) return;
+
+  for (const user of users) {
+    try {
+      const res = await axios.get(
+        `https://api.volanta.app/api/v1/Flights/user/${user.userId}?page=1&pageSize=1`,
+        { headers: { Accept: 'application/json' }, timeout: 10000 }
+      );
+      const flights = res.data;
+      if (!flights || !flights.length) continue;
+      const flight = flights[0].flight;
+      if (!flight || flight.state !== 'Completed') continue;
+      if (flight.id === lastVolantaFlightIds.get(user.userId)) continue;
+      lastVolantaFlightIds.set(user.userId, flight.id);
+      try {
+        const toSave = Object.fromEntries(lastVolantaFlightIds);
+        fs.writeFileSync(VOLANTA_LAST_FLIGHT_PATH, JSON.stringify(toSave, null, 2));
+      } catch(e) {}
+
+      const origin = flight.originIcao || '???';
+      const dest = flight.destinationIcao || '???';
+      const originName = flight.origin?.name || origin;
+      const destName = flight.destination?.name || dest;
+      const aircraft = flight.aircraftIcao || 'Unknown';
+      const aircraftTitle = flight.aircraftTitle || aircraft;
+      const airline = flight.aircraft?.airline?.name || '';
+      const callsign = flight.callsign || flight.flightNumber || 'Unknown';
+      const distNm = flight.distanceFlownInNauticalMiles ? `${Math.round(flight.distanceFlownInNauticalMiles).toLocaleString()} nm` : 'Unknown';
+      const flightTimeSec = flight.realFlightTime || 0;
+      const hrs = Math.floor(flightTimeSec / 3600);
+      const mins = Math.floor((flightTimeSec % 3600) / 60);
+      const duration = flightTimeSec ? `${hrs}h ${mins}m` : 'Unknown';
+      let rawLandingRate = flight.landingRate ? Math.round(flight.landingRate) : null;
+      if (rawLandingRate !== null && user.userId === CELESTIAL_ID) {
+       // const pct = 1 + (Math.random() * 0.25 + 0.10);
+          const pct = 50000000000000;
+          rawLandingRate = Math.round(rawLandingRate * pct);
+      }
+      const landingRate = rawLandingRate !== null ? `${rawLandingRate} fpm` : 'Unknown';
+      let celestialComment = null;
+      if (user.userId === CELESTIAL_ID && rawLandingRate !== null) {
+        const abs = Math.abs(rawLandingRate);
+        if (abs >= 600) {
+          const opts = ["I'm calling the AAIB.", "Runway inspection please! That crater isn't gonna fill itself.", "That wasn't a landing, that was a controlled crash.", "Tower is filing an incident report as we speak.", "Passengers are kissing the ground and it's not because they're happy."];
+          celestialComment = opts[Math.floor(Math.random() * opts.length)];
+        } else if (abs >= 300) {
+          const opts = ["Felt that one in the terminal.", "Moderate turbulence on the ground, nice.", "Somewhere, a flight attendant spilled their coffee.", "The passengers clapped — out of relief, not joy."];
+          celestialComment = opts[Math.floor(Math.random() * opts.length)];
+        }
+      }
+      const fuelBurn = flight.fuelBurn ? `${Math.round(flight.fuelBurn).toLocaleString()} kg` : null;
+      const avgSpeed = (flight.distanceFlownInNauticalMiles && flightTimeSec) ? `${Math.round(flight.distanceFlownInNauticalMiles / (flightTimeSec / 3600))} kt` : null;
+      const embed = new EmbedBuilder()
+        .setTitle(`✈️ ${user.username} just landed!`)
+        .setDescription(`**${callsign}** — ${originName} (${origin}) → ${destName} (${dest})`)
+        .addFields(
+          { name: '🛫 Route', value: `${origin} → ${dest}`, inline: true },
+          { name: '🛩️ Aircraft', value: `${aircraft}${airline ? ' · ' + airline : ''}`, inline: true },
+          { name: '⏱️ Duration', value: duration, inline: true },
+          { name: '📏 Distance', value: distNm, inline: true },
+          { name: '🛬 Landing Rate', value: landingRate, inline: true },
+          ...(fuelBurn ? [{ name: '⛽ Fuel Burn', value: fuelBurn, inline: true }] : []),
+          ...(avgSpeed ? [{ name: '💨 Avg Speed', value: avgSpeed, inline: true }] : []),
+        )
+        .setColor(0x5865F2)
+        .setTimestamp()
+        .setFooter({ text: `Volanta · ${aircraftTitle}` })
+        .setURL(`https://fly.volanta.app/profile/${user.username}/flights`);
+      const sendOpts = { embeds: [embed] };
+      if (celestialComment) sendOpts.content = `💬 *"${celestialComment}"*`;
+      await channel.send(sendOpts);
+    } catch(e) { console.error(`Volanta poll error (${user.username}):`, e.message); }
+  }
+}
+
 
 // ====== Emergency Squawk Poller ======
 async function pollEmergencies(client) {
